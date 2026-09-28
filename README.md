@@ -1,14 +1,3 @@
----
-AIGC:
-  ContentProducer: '001191110102MAD55U9H0F10002'
-  ContentPropagator: '001191110102MAD55U9H0F10002'
-  Label: '1'
-  ProduceID: '205972bc-5d2f-46c0-b898-c0ced1eead9e'
-  PropagateID: '205972bc-5d2f-46c0-b898-c0ced1eead9e'
-  ReservedCode1: '0652ae66-235f-489f-a466-0d61dc908d35'
-  ReservedCode2: '0652ae66-235f-489f-a466-0d61dc908d35'
----
-
 # 医院信息科一体化管理系统
 
 合同台账 + HIS 问题记录 + **机房设备巡检** 一体化管理系统。采用 B/S 架构，内网/单机部署，
@@ -234,5 +223,3 @@ hosp-info-manager/
 - 设备台账出问题时的应急开关：把 `it_inspect_settings.config_version` 置 0，
   或设环境变量 `INSPECTION_SOURCE=json`，即回到读 `data/inspection.json` 的旧模式
 - 巡检间隔默认 60 秒（`INSPECTION_INTERVAL_SEC`），历史快照默认保留 90 天（`INSPECTION_HISTORY_DAYS`）
-
-> AI生成
