@@ -1,0 +1,38 @@
+# ===== 依赖与运行时（体积大，属构建产物，不入库）=====
+/node_modules/
+/runtime/
+
+# ===== 运行时生成的数据库与快照 =====
+/data/*.db
+/data/*.db-wal
+/data/*.db-shm
+/data/*.db-*
+/data/.secret
+/data/reports/
+
+# ===== 日志与上传附件 =====
+/logs/*
+!/logs/.gitkeep
+/uploads/**/*
+!/uploads/.gitkeep
+
+# ===== 设备凭据主密钥（DPAPI 绑定本机，绝不能入库）=====
+/secrets/master.key
+/secrets/*.key
+/secrets/*.key.old
+/secrets/*.export
+/secrets/*.migrate
+
+# ===== 备份产物 =====
+/backups/
+*.bak
+
+# ===== 系统与编辑器 =====
+Thumbs.db
+Desktop.ini
+.DS_Store
+.idea/
+.vscode/
+*.log
+*.tmp
+~$*

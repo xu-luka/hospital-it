@@ -1,0 +1,28 @@
+{
+  "name": "hospital-it",
+  "version": "2.0.0",
+  "private": true,
+  "description": "医院信息科一体化管理系统（合同台账 + 问题工单 + 机房设备巡检）",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "backup": "node scripts/backup.js",
+    "inspect": "node scripts/inspect-cli.js",
+    "weekly": "node scripts/weekly-cli.js",
+    "register-weekly": "node scripts/register-weekly.js",
+    "migrate:config": "node scripts/migrate-config-to-db.js",
+    "migrate:accounts": "node scripts/migrate-accounts.js",
+    "check": "node scripts/doctor.js",
+    "check:views": "node scripts/check-views.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "iconv-lite": "^0.6.3",
+    "multer": "^2.0.1",
+    "oracledb": "^7.0.1",
+    "ssh2": "^1.17.0",
+    "tedious": "^14.7.0",
+    "word-extractor": "^1.0.4",
+    "xlsx": "0.18.5"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "global": {
+    "concurrency": 5,
+    "timeout_ms": 90000,
+    "ssh_port_default": 22,
+    "report_dir": "",
+    "thresholds": {
+      "cpu_percent_warn": 70,
+      "cpu_percent_critical": 90,
+      "memory_percent_warn": 80,
+      "memory_percent_critical": 95,
+      "disk_percent_warn": 80,
+      "disk_percent_critical": 90,
+      "load_per_core_warn": 1
+    }
+  },
+  "servers": []
+}

@@ -1,0 +1,14 @@
+# 默认按文本处理，仓库内统一 LF，检出时按下面规则还原
+* text=auto eol=lf
+
+# Windows 批处理必须是 CRLF，否则 cmd.exe 解析异常
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制资源，禁止做换行符转换
+*.exe binary
+*.docx binary
+*.xlsx binary
+*.db binary
+*.png binary
+*.jpg binary
