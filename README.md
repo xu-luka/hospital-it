@@ -235,4 +235,4 @@ hosp-info-manager/
   或设环境变量 `INSPECTION_SOURCE=json`，即回到读 `data/inspection.json` 的旧模式
 - 巡检间隔默认 60 秒（`INSPECTION_INTERVAL_SEC`），历史快照默认保留 90 天（`INSPECTION_HISTORY_DAYS`）
 
-> 
+> AI生成
