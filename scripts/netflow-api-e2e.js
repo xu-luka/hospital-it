@@ -148,6 +148,27 @@ function eq(tag, a, b) {
   r = await call('GET', '/api/inspection/netflow/series?deviceId=1');
   eq('缺参数返回 400', r.json && r.json.code, 400);
 
+  console.log('\n== GET /netflow/trend（大屏用·全网合计趋势） ==');
+  r = await call('GET', '/api/inspection/netflow/trend?minutes=120');
+  eq('code 0', r.json && r.json.code, 0);
+  const tr = (r.json.data && r.json.data.items) || [];
+  ok('有趋势点位', tr.length >= 13, tr.length + ' 点');
+  ok('时间升序', tr.every((p, i) => i === 0 || String(tr[i - 1].at) <= String(p.at)));
+  ok('每点带收发数值', tr.every((p) => typeof p.totalBps === 'number' && typeof p.inBps === 'number' && typeof p.outBps === 'number'));
+  ok('合计 = 入 + 出', tr.every((p) => p.totalBps === p.inBps + p.outBps));
+  ok('同刻多设备并成一点', tr[0] && tr[0].devices === 1, 'devices=' + (tr[0] && tr[0].devices));
+  eq('minutes 回显', r.json.data.minutes, 120);
+  // 最后一轮只灌了 0/0/1 一个端口：800M in+out -> 600M in + 200M out
+  const lastPt = tr[tr.length - 1];
+  ok('最新点对应最新一轮', lastPt && lastPt.totalBps === 800000000, lastPt && (lastPt.inBps + '/' + lastPt.outBps));
+  ok('最新点入向 600M', lastPt && lastPt.inBps === 600000000, lastPt && lastPt.inBps);
+  // 历史轮次每轮 3 个端口：(1+2+3)*1.5M = 9M
+  ok('历史点合计 9M', tr.some((p) => p.totalBps === 9000000), tr.slice(0, 3).map((p) => p.totalBps).join(','));
+  r = await call('GET', '/api/inspection/netflow/trend?minutes=abc');
+  eq('非法 minutes 降级为默认', r.json && r.json.data.minutes, 60);
+  r = await call('GET', '/api/inspection/netflow/trend?minutes=1');
+  ok('短窗口不报错', r.status === 200 && Array.isArray(r.json.data.items), ((r.json.data.items) || []).length + ' 点');
+
   console.log('\n== GET /netflow/alerts ==');
   r = await call('GET', '/api/inspection/netflow/alerts?limit=50');
   eq('code 0', r.json && r.json.code, 0);

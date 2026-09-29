@@ -166,6 +166,32 @@ const ser = ns.series(DEV.id, 'GE0_0_1', 120);
 ok('单端口时序有点位', ser.length >= 6, ser.length + ' 点');
 ok('时序按时间正序', ser.length < 2 || ser[0].at <= ser[ser.length - 1].at);
 
+console.log('\n== 全网趋势（大屏画图用） ==');
+const tr = ns.trend(180);
+ok('趋势有点位', tr.length >= 6, tr.length + ' 点');
+ok('趋势按时间正序', tr.length < 2 || tr[0].at <= tr[tr.length - 1].at);
+// 一轮采集里所有设备共用同一个 sampled_at，所以一个时刻必须只出一行，
+// 否则大屏的趋势线会被拆成好几条互不相连的点
+ok('同一时刻只聚成一点', new Set(tr.map((p) => p.at)).size === tr.length);
+
+// 同一时刻两台设备 → 并成 1 个点，吞吐相加（时间戳只算一次，避免跨秒）
+const at12 = ns.agoText(12);
+ns.saveSamples({
+  deviceId: 8, device: '住院楼汇聚', host: '10.0.0.3', at: at12,
+  rows: [row('GE0/0/1', 30e6, 10e6, '172.16.9.40')]
+});
+ns.saveSamples({
+  deviceId: 9, device: '老机房接入', host: '10.0.0.4', at: at12,
+  rows: [row('GE0/0/1', 5e6, 1e6, '172.16.9.41')]
+});
+const merged = ns.trend(180).filter((p) => p.at === at12);
+eq('同刻两台设备并成 1 点', merged.length, 1);
+eq('该点设备数', merged[0] && merged[0].devices, 2);
+ok('该点吞吐为两台相加', merged[0] && merged[0].totalBps === (30e6 + 10e6) + (5e6 + 1e6),
+  merged[0] && merged[0].totalBps);
+ok('每点合计 = 入 + 出', ns.trend(180).every((p) => Math.abs(p.totalBps - (p.inBps + p.outBps)) < 1));
+ok('空窗口返回空数组而不是报错', Array.isArray(ns.trend(0)));
+
 console.log('\n== 最新快照 ==');
 const lt = ns.latest(DEV.id);
 ok('有最新时间戳', !!lt.at, lt.at);

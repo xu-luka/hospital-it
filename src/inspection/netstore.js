@@ -486,6 +486,38 @@ function series(deviceId, ifaceKey, minutes) {
   }
 }
 
+/**
+ * 全网吞吐趋势（大屏画图用）：按采样时刻聚合成一条曲线。
+ *
+ * 一轮采集里所有设备共用同一个 sampled_at（netmon 整轮只取一次时间），
+ * 所以 GROUP BY sampled_at 出来的就是「第 N 轮的全网合计」，数量 = 轮次数，
+ * 不会因为设备多少而膨胀。
+ *
+ * 口径说明：累加的是**被监控端口**的总吞吐，不是交换机背板带宽，
+ * 页面/大屏上要写清「被监控端口合计」，免得被当成全网真实总流量。
+ */
+function trend(minutes) {
+  if (!init()) return [];
+  const since = agoText(Math.max(1, Number(minutes || 60)));
+  try {
+    return db.prepare(
+      'SELECT sampled_at, SUM(total_bps) total_bps, SUM(in_bps) in_bps, SUM(out_bps) out_bps,'
+      + ' COUNT(DISTINCT device_id) devices'
+      + ' FROM it_net_sample WHERE sampled_at >= ?'
+      + ' GROUP BY sampled_at ORDER BY sampled_at ASC LIMIT 2000'
+    ).all(since).map((r) => ({
+      at: r.sampled_at,
+      totalBps: r.total_bps || 0,
+      inBps: r.in_bps || 0,
+      outBps: r.out_bps || 0,
+      devices: r.devices || 0
+    }));
+  } catch (e) {
+    lastError = String((e && e.message) || e);
+    return [];
+  }
+}
+
 function listAlerts(o) {
   const opt = o || {};
   if (!init()) return [];
@@ -568,7 +600,7 @@ module.exports = {
   DEFAULTS, init, now, agoText, fmtBps, median,
   getConfig, setConfig,
   saveSamples, baseline, detectBursts, saveAlerts,
-  latest, topIp, topPort, series, listAlerts, ackAlert, ackAll,
+  latest, topIp, topPort, series, trend, listAlerts, ackAlert, ackAll,
   cleanup, stats,
   available: () => ready || init()
 };

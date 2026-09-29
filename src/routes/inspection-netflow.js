@@ -110,6 +110,17 @@ router.get('/netflow/series', authRequired, (req, res) => {
   }
 });
 
+/* ---------------- 全网趋势（大屏画图用） ---------------- */
+
+router.get('/netflow/trend', authRequired, (req, res) => {
+  const minutes = toInt(req.query.minutes, 60, 1, 60 * 24 * 7);
+  try {
+    res.json({ code: 0, data: { minutes, items: store.trend(minutes) } });
+  } catch (e) {
+    res.json({ code: 500, message: '读取趋势失败：' + ((e && e.message) || e), data: { items: [] } });
+  }
+});
+
 /* ---------------- 告警 ---------------- */
 
 router.get('/netflow/alerts', authRequired, (req, res) => {

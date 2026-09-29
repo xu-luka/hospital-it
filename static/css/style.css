@@ -600,9 +600,102 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .scr-nomatch { color: var(--sc-muted); font-size: 13px; padding: 14px 4px; grid-column: 1 / -1; }
 .scr-foot { margin-top: 22px; color: var(--sc-muted); font-size: 13px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
 
+/* ---- 内嵌流量监控（四种版式共用同一批基础件，配色沿用 scr- 变量） ---- */
+/* 版式切换器：直接放在大屏控制条里，值班时随手切 */
+.scr-flow-sw { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--sc-muted); }
+.scr-flow-sw .k { opacity: .85; }
+.scr-flow-sw .opt { cursor: pointer; user-select: none; padding: 3px 10px; border-radius: 14px; border: 1px solid var(--sc-line); transition: background .15s, border-color .15s; }
+.scr-flow-sw .opt:hover { background: #1e3050; }
+.scr-flow-sw .opt.active { background: #274060; border-color: #4f8ef7aa; color: var(--sc-text); }
+
+/* 侧栏版式：设备区与流量栏并排；其它版式下这两个 wrapper 就是普通块 */
+.scr-flow.with-aside { display: grid; grid-template-columns: minmax(0, 1fr) 330px; gap: 18px; align-items: start; }
+.scr-flow-main { min-width: 0; }
+.nf-none { color: var(--sc-muted); font-size: 12.5px; padding: 8px 2px; line-height: 1.6; }
+
+/* 版式 A：顶部流量带 */
+.nf-band { display: grid; grid-template-columns: minmax(300px, .9fr) minmax(320px, 1.1fr); gap: 14px; margin-bottom: 20px; }
+.nf-box { background: linear-gradient(160deg, var(--sc-panel), #0c1626); border: 1px solid var(--sc-line); border-radius: 12px; padding: 14px 16px; }
+.nf-box-h { font-size: 12px; color: var(--sc-muted); letter-spacing: 1px; margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.nf-box-h b { color: #7cc4ff; font-weight: 700; }
+.nf-kpis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.nf-kpi { background: #0d1a2e; border: 1px solid var(--sc-line); border-radius: 9px; padding: 10px 12px; }
+.nf-kpi .v { font-size: 24px; font-weight: 800; font-variant-numeric: tabular-nums; color: #7cc4ff; }
+.nf-kpi .v s { text-decoration: none; font-size: 12px; font-weight: 400; color: var(--sc-muted); margin-left: 3px; }
+.nf-kpi.alert .v { color: #f87171; }
+.nf-kpi .l { color: var(--sc-muted); font-size: 12px; margin-top: 3px; }
+.nf-row { display: flex; align-items: center; gap: 10px; font-size: 12.5px; padding: 4px 0; }
+.nf-row .ip { width: 112px; flex-shrink: 0; font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nf-row .bar { flex: 1; height: 7px; background: #0d1a2e; border-radius: 5px; overflow: hidden; }
+.nf-row .bar i { display: block; height: 100%; border-radius: 5px; background: linear-gradient(90deg, #4f8ef7, #7cc4ff); }
+.nf-row .val { width: 86px; text-align: right; font-variant-numeric: tabular-nums; }
+.nf-row.warn .bar i { background: linear-gradient(90deg, #f59e0b, #fbbf24); }
+.nf-row.warn .val { color: #fbbf24; }
+.nf-row.hot .bar i { background: linear-gradient(90deg, #ef4444, #f87171); }
+.nf-row.hot .val { color: #f87171; }
+
+/* 版式 C：独立流量分区 */
+.nf-sec-body { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); gap: 16px; }
+.nf-panel { background: linear-gradient(160deg, var(--sc-panel), #0c1626); border: 1px solid var(--sc-line); border-radius: 12px; padding: 14px 16px; }
+.nf-panel-h { font-size: 12px; color: var(--sc-muted); letter-spacing: 1px; margin-bottom: 10px; }
+.nf-io { display: flex; gap: 26px; margin-bottom: 10px; flex-wrap: wrap; }
+.nf-io .n { font-size: 22px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.nf-io .l { font-size: 12px; color: var(--sc-muted); }
+.nf-io .in .n { color: #7cc4ff; } .nf-io .out .n { color: #fbbf24; }
+.nf-chart { width: 100%; height: 132px; display: block; background: #0d1a2e; border: 1px solid var(--sc-line); border-radius: 8px; }
+.nf-chart.sm { height: 84px; }
+.nf-tbl { width: 100%; border-collapse: collapse; font-size: 12px; }
+.nf-tbl th { text-align: left; color: var(--sc-muted); font-weight: 400; padding: 4px 8px; border-bottom: 1px solid var(--sc-line); }
+.nf-tbl td { padding: 6px 8px; border-bottom: 1px dashed #16263f; font-variant-numeric: tabular-nums; }
+.nf-tbl .num { text-align: right; }
+.nf-tbl .nf-dev { color: var(--sc-muted); }
+.nf-tbl tr.warn td { color: #fcd34d; }
+.nf-tbl tr.hot td { color: #fca5a5; }
+.nf-tbl tr.warn .nf-dev, .nf-tbl tr.hot .nf-dev { color: inherit; opacity: .7; }
+
+/* 版式 B：右侧固定信息栏（滚设备列表时它始终在） */
+.nf-aside { background: linear-gradient(170deg, #12203a, #0c1626); border: 1px solid var(--sc-line); border-radius: 12px; padding: 14px 15px; position: sticky; top: 16px; }
+.nf-aside-h { font-size: 13px; font-weight: 700; letter-spacing: 1px; color: #7cc4ff; margin-bottom: 12px; display: flex; align-items: center; }
+.nf-aside-h::before { content: ''; display: inline-block; width: 5px; height: 15px; border-radius: 3px; background: linear-gradient(180deg, #7cc4ff, #4f8ef7); margin-right: 9px; }
+.nf-total { background: #0d1a2e; border: 1px solid var(--sc-line); border-radius: 10px; padding: 12px 14px; margin-bottom: 12px; }
+.nf-total .big { font-size: 30px; font-weight: 800; font-variant-numeric: tabular-nums; color: #7cc4ff; }
+.nf-total .sub { color: var(--sc-muted); font-size: 12px; margin-top: 2px; }
+.nf-total .up { color: #f87171; } .nf-total .down { color: #4ade80; }
+.nf-as-sec { font-size: 11.5px; color: var(--sc-muted); margin: 12px 0 7px; letter-spacing: 1px; }
+.nf-vrow { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 4px 0; }
+.nf-vrow .ip { width: 100px; flex-shrink: 0; font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nf-vrow .bar { flex: 1; height: 6px; background: #0d1a2e; border-radius: 5px; overflow: hidden; }
+.nf-vrow .bar i { display: block; height: 100%; border-radius: 5px; background: linear-gradient(90deg, #4f8ef7, #7cc4ff); }
+.nf-vrow .val { width: 76px; text-align: right; font-variant-numeric: tabular-nums; }
+.nf-vrow.warn .bar i { background: linear-gradient(90deg, #f59e0b, #fbbf24); }
+.nf-vrow.warn .val { color: #fbbf24; }
+.nf-vrow.hot .bar i { background: linear-gradient(90deg, #ef4444, #f87171); }
+.nf-vrow.hot .val { color: #f87171; }
+.nf-alert-item { font-size: 11.5px; line-height: 1.55; border-radius: 7px; padding: 7px 9px; margin-bottom: 6px; word-break: break-word; }
+.nf-alert-item.critical { color: #fca5a5; background: #ef444416; border: 1px solid #ef444444; }
+.nf-alert-item.warning { color: #fcd34d; background: #f59e0b16; border: 1px solid #f59e0b3a; }
+.nf-alert-item .t { color: var(--sc-muted); margin-left: 5px; }
+
+/* 版式 D：交换机卡片内联端口条
+   卡片内容宽约 264px，四列必须精打细算，否则进度条会被挤成一条缝 */
+.nf-ports { margin-top: 11px; border-top: 1px dashed #1e3050; padding-top: 9px; display: grid; gap: 6px; }
+.nf-port { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--sc-text); }
+.nf-port .if { width: 62px; flex-shrink: 0; color: var(--sc-muted); font-family: Consolas, Monaco, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nf-port .who { width: 66px; flex-shrink: 0; font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nf-port .track { flex: 1; min-width: 24px; height: 6px; background: #0d1a2e; border-radius: 5px; overflow: hidden; }
+.nf-port .track i { display: block; height: 100%; border-radius: 5px; background: linear-gradient(90deg, #4f8ef7, #7cc4ff); }
+.nf-port .val { width: 72px; flex-shrink: 0; text-align: right; font-variant-numeric: tabular-nums; }
+.nf-port.warn .track i { background: linear-gradient(90deg, #f59e0b, #fbbf24); }
+.nf-port.warn .who, .nf-port.warn .val { color: #fbbf24; }
+.nf-port.hot .track i { background: linear-gradient(90deg, #ef4444, #f87171); }
+.nf-port.hot .who, .nf-port.hot .val { color: #fca5a5; }
+
 @media (max-width: 900px) {
   .scr-wrap { padding: 16px 14px; min-height: 0; }
   .scr-grid { grid-template-columns: 1fr; }
+  .scr-flow.with-aside { grid-template-columns: 1fr; }
+  .nf-band, .nf-sec-body { grid-template-columns: 1fr; }
+  .nf-aside { position: static; }
 }
 
 /* 巡检报告：生成过程的日志区 */
