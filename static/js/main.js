@@ -76,6 +76,9 @@
             <div class="menu-item sub" :class="{active: route.path==='reports'}" @click="go('reports')">
               <span class="menu-icon">📑</span>巡检报告
             </div>
+            <div class="menu-item sub" :class="{active: route.path==='netflow'}" @click="go('netflow')">
+              <span class="menu-icon">🌐</span>流量监控
+            </div>
 
             <div class="nav-group-title">系统管理</div>
             <div v-if="isAdmin" class="menu-item sub" :class="{active: route.path==='users'}" @click="go('users')">
@@ -154,6 +157,7 @@
         // 大屏整块空白且 prod 构建不打任何警告。此处用 'big-screen-view' 才能命中。
         if (p === 'bigscreen') return 'big-screen-view';
         if (p === 'reports') return 'reports-view';
+        if (p === 'netflow') return 'netflow-view';
         if (p === 'docs') return 'docs-view';
         if (p === 'doc') return 'doc-page-view';
         return 'dashboard-view';
@@ -244,6 +248,11 @@
       console.error('[main.js] 巡检组件缺失，未注册：' + n + '（对应页面会显示空白）');
     }
   });
+  if (V.NetflowView) {
+    app.component('NetflowView', V.NetflowView);
+  } else {
+    console.error('[main.js] 流量监控组件缺失（netflow-view.js 未加载），流量监控页会显示空白');
+  }
 
   // 登录后同步 userState（视图组件经 window.HisUser 读取）
   const origSetUser2 = api.setUser;

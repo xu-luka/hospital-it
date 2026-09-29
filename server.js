@@ -78,6 +78,8 @@ function mountInspection(app) {
     app.use('/api/inspection', require('./src/routes/inspection'));
     app.use('/api/inspection', require('./src/routes/inspection-devices'));
     app.use('/api/inspection', require('./src/routes/inspection-extra'));
+    // 网络流量监控（端口级，复用 SSH，不引入 SNMP）
+    app.use('/api/inspection', require('./src/routes/inspection-netflow'));
 
     // 每轮结束后把结果回写到台账的 last_status，台账页才能显示每台的上次结果
     scheduler.setOnRoundDone(async (ctx) => {
@@ -158,6 +160,13 @@ const server = app.listen(config.PORT, config.HOST, () => {
     const scheduler = global.__scheduler;
     scheduler.start({ interval: config.INSPECTION_INTERVAL_SEC })
       .catch((e) => console.error('>>> 巡检调度启动失败（业务不受影响）：' + ((e && e.message) || e)));
+    // 流量监控独立调度（默认 5 分钟一轮，只看交换机端口）
+    try {
+      require('./src/inspection/netmon').start()
+        .catch((e) => console.error('>>> 流量监控启动失败（业务不受影响）：' + ((e && e.message) || e)));
+    } catch (e) {
+      console.error('>>> 流量监控装载失败（业务不受影响）：' + ((e && e.message) || e));
+    }
   }
 });
 
@@ -180,6 +189,7 @@ function shutdown(signal) {
   console.log('\n>>> 收到 ' + signal + '，正在停止...');
   if (inspectionAvailable && global.__scheduler) {
     Promise.resolve(global.__scheduler.stop()).catch(() => { });
+    try { require('./src/inspection/netmon').stop(); } catch (e) { /* 未装载则忽略 */ }
   }
   server.close(() => { console.log('>>> 已停止'); process.exit(0); });
   // 兜底：若 5 秒内没能正常关闭（如还有请求挂着），强制退出

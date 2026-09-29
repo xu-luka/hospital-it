@@ -837,3 +837,55 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .mini-table .c-ops  { width: 72px; }
 .imp-fail { color: var(--danger); }
 .imp-skip { color: var(--gray); }
+
+/* ---------- 网络流量监控 ----------
+   列宽一律用 px 且总和固定，配 min-width 让窄屏走 .table-wrap 的横向滚动：
+   table-layout:fixed + width:100% 时，若指定列宽之和超过容器，浏览器会把各列
+   按比例压缩（实测交换机列被压成逐字竖排、表头互相重叠）。
+   给一个不小于列宽之和的 min-width，宽度不足时宁可出现横向滚动条，也不压扁内容。 */
+.net-table { table-layout: fixed; min-width: 1020px; }
+.net-table .c-idx   { width: 44px; }
+.net-table .c-ip    { width: 128px; }
+.net-table .c-dev   { width: 156px; }
+.net-table .c-iface { width: 150px; }
+.net-table .c-cnt   { width: 70px; }
+.net-table .c-in    { width: 104px; }
+.net-table .c-out   { width: 104px; }
+.net-table .c-total { width: 116px; }
+.net-table .c-peak  { width: 108px; }
+.net-table .c-avg   { width: 104px; }
+.net-table .c-base  { width: 104px; }
+.net-table .c-ratio { width: 70px; }
+.net-table .c-dir   { width: 88px; }
+.net-table .c-bar   { width: 92px; }
+.net-table .c-time  { width: 140px; }
+.net-table .c-ops   { width: 72px; }
+/* 设备名与副信息都要能截断：长设备名在窄列里逐字换行会把行高撑得参差不齐 */
+.net-name { display: block; font-weight: 600; color: var(--navy-800); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.net-table .cell-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.net-note { padding: 10px 14px; font-size: 12.5px; color: var(--gray); border-top: 1px solid var(--border); line-height: 1.7; }
+.net-tip { margin-top: 10px; font-size: 12.5px; color: var(--gray); background: #f8fafc; border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; line-height: 1.6; }
+.net-tip.err { color: #b91c1c; background: #fef2f2; border-color: #fecaca; }
+/* 占用条：相对本页峰值的视觉参考，不做精确标尺 */
+.net-bar { height: 8px; background: #eef2f7; border-radius: 4px; overflow: hidden; }
+.net-bar i { display: block; height: 100%; background: var(--primary); border-radius: 4px; }
+.net-chart { width: 100%; height: 180px; display: block; background: #fbfdff; border: 1px solid var(--border); border-radius: 6px; }
+.net-grid { stroke: #e2e8f0; stroke-width: 1; }
+.net-line { fill: none; stroke-width: 2; stroke-linejoin: round; }
+.net-line.in  { stroke: #2563eb; }
+.net-line.out { stroke: #f59e0b; }
+.net-legend { display: flex; gap: 18px; align-items: center; margin-top: 8px; font-size: 12.5px; color: #334155; }
+.net-legend .sw { display: inline-block; width: 14px; height: 3px; margin-right: 6px; vertical-align: middle; border-radius: 2px; }
+.net-legend .sw.in  { background: #2563eb; }
+.net-legend .sw.out { background: #f59e0b; }
+/* 分段切换（排行 / 快照 / 告警） */
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.seg-btn { border: none; background: #fff; padding: 7px 14px; font-size: 13px; color: #475569; cursor: pointer; border-right: 1px solid var(--border); }
+.seg-btn:last-child { border-right: none; }
+.seg-btn:hover { background: #f1f5f9; }
+.seg-btn.on { background: var(--primary); color: #fff; }
+/* 复选框行（「只看未确认」等）
+   必须清掉 .filter-bar input 的 min-width:120px / 边框 / 内边距，
+   否则复选框会被撑成一个 120px 宽的空白输入框（文字与勾选框之间空出一大截）。 */
+.ck { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: #475569; cursor: pointer; user-select: none; }
+.filter-bar .ck input { min-width: 0; width: 14px; height: 14px; padding: 0; margin: 0; border: none; background: none; }

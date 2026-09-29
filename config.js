@@ -24,7 +24,8 @@ module.exports = {
 
   // 巡检历史库：独立于业务库，避免巡检数据（每天数百条快照）把合同/问题库撑大，
   // 也便于单独清理与单独备份保留策略
-  INSPECT_DB_FILE: path.join(ROOT, 'data', 'inspect.db'),
+  // 可用环境变量覆盖，便于离线自测时指向临时库而不污染生产数据
+  INSPECT_DB_FILE: process.env.INSPECT_DB_FILE || path.join(ROOT, 'data', 'inspect.db'),
   // 历史快照保留天数，超出的在每轮完成后自动清理。默认 90 天足够看长期趋势
   INSPECT_HISTORY_DAYS: parseInt(process.env.INSPECT_HISTORY_DAYS || '90', 10),
 
