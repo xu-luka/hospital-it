@@ -33,13 +33,17 @@ function toInt(v, def, min, max) {
 
 /* ---------------- 可监控的交换机 ---------------- */
 
+// 台账模块未必是最新版（服务器可能只替换了部分文件），字典取不到就退回原始类型值，
+// 不要因为一个显示用的标签把整个接口打挂
+const OS_LABELS = (deviceRepo && deviceRepo.OS_LABELS) || {};
+
 router.get('/netflow/devices', authRequired, (req, res) => {
   try {
     const rows = deviceRepo.listRows({ enabledOnly: true })
       .filter((r) => r.os === 'switch')
       .map((r) => ({
         id: r.id, name: r.name, host: r.host,
-        osLabel: deviceRepo.OS_LABELS[r.os] || r.os,
+        osLabel: OS_LABELS[r.os] || r.os,
         location: r.location || '', remark: r.remark || ''
       }));
     res.json({ code: 0, data: { items: rows } });

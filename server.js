@@ -79,7 +79,13 @@ function mountInspection(app) {
     app.use('/api/inspection', require('./src/routes/inspection-devices'));
     app.use('/api/inspection', require('./src/routes/inspection-extra'));
     // 网络流量监控（端口级，复用 SSH，不引入 SNMP）
-    app.use('/api/inspection', require('./src/routes/inspection-netflow'));
+    // 单独包一层：这是新增模块，万一它装载失败（依赖缺失、文件版本不匹配），
+    // 不能连累巡检本身 —— 巡检挂了才是事故，流量监控挂了只是少一块功能。
+    try {
+      app.use('/api/inspection', require('./src/routes/inspection-netflow'));
+    } catch (e) {
+      console.error('>>> [流量] 路由装载失败，巡检不受影响：' + ((e && e.message) || e));
+    }
 
     // 每轮结束后把结果回写到台账的 last_status，台账页才能显示每台的上次结果
     scheduler.setOnRoundDone(async (ctx) => {
@@ -91,19 +97,38 @@ function mountInspection(app) {
     // 主密钥经 DPAPI(LocalMachine) 封装，无法随包分发，只能在目标机器上现场生成；
     // 必须等生成完成再做审计，否则启动日志会误报「主密钥文件缺失」。
     // 注意：这里只能用异步 execFile —— 实测对该 exe 用 execFileSync 会稳定报 EBUSY。
-    const secret = require('./src/inspection/lib/secret');
-    const keyFile = secret.keyFilePath();
-    const keyExisted = require('fs').existsSync(keyFile);
+    //
+    // 这一段必须自己兜住异常、绝不外抛：它只是「锦上添花」（少一条提示而已），
+    // 而它在 mountInspection 的 try 里，一旦抛出会被最外层 catch 当成
+    // 「巡检模块装载失败」，结果是巡检 + 流量监控整个不可用。
+    // 实测踩过：只替换部分文件的部署上 secret.js 可能是旧版，没有 ensureKeyFileAsync，
+    // 直接把整个巡检模块拖垮（[警告] 巡检模块装载失败：... is not a function）。
+    try {
+      const secret = require('./src/inspection/lib/secret');
+      const keyFile = typeof secret.keyFilePath === 'function' ? secret.keyFilePath() : '';
+      const keyExisted = keyFile ? require('fs').existsSync(keyFile) : false;
 
-    secret.ensureKeyFileAsync().then((ok) => {
-      if (ok && !keyExisted) console.log('>>> 已为本机生成主密钥：' + keyFile);
-      // 外部资产缺失要在启动阶段就暴露，而不是等到巡检失败才让人猜
-      const audit = paths.audit();
-      if (!audit.ok) {
-        console.warn('[警告] 巡检外部资产缺失，相关设备会巡检失败：');
-        audit.missing.forEach((m) => console.warn('        - ' + m.label + ' → ' + m.path));
+      if (typeof secret.ensureKeyFileAsync !== 'function') {
+        // 版本不匹配时把实际可用导出打出来，下次重启就能一眼定位缺了什么
+        console.warn('>>> [巡检] 密钥模块版本不匹配（缺少 ensureKeyFileAsync），'
+          + '跳过首次密钥自愈与资产审计。该模块实际导出：' + Object.keys(secret).join(', '));
+      } else {
+        secret.ensureKeyFileAsync().then((ok) => {
+          if (ok && !keyExisted) console.log('>>> 已为本机生成主密钥：' + keyFile);
+          // 外部资产缺失要在启动阶段就暴露，而不是等到巡检失败才让人猜
+          if (typeof paths.audit !== 'function') return;
+          const audit = paths.audit();
+          if (!audit.ok) {
+            console.warn('[警告] 巡检外部资产缺失，相关设备会巡检失败：');
+            audit.missing.forEach((m) => console.warn('        - ' + m.label + ' → ' + m.path));
+          }
+        }).catch((e) => {
+          console.warn('>>> [巡检] 密钥自愈/资产审计失败（忽略）：' + ((e && e.message) || e));
+        });
       }
-    });
+    } catch (e) {
+      console.warn('>>> [巡检] 密钥自愈初始化失败（不影响巡检）：' + ((e && e.message) || e));
+    }
     global.__scheduler = scheduler;
     return true;
   } catch (e) {
