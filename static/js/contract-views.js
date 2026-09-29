@@ -554,12 +554,20 @@
   V.UsersView = {
     data() { return { users: [], roles: [], form: null, saving: false }; },
     async mounted() { await this.load(); },
+    computed: {
+      me() { const u = window.HisUser && window.HisUser.user; return u || {}; },
+      activeCount() { return this.users.filter(u => u.isActive).length; },
+    },
     methods: {
       async load() {
         try { this.users = await api.get('/api/users'); } catch (e) { this.$toast(e.message, 'err'); }
         try { this.roles = await api.get('/api/roles'); } catch (e) {}
       },
       roleName(id) { const r = this.roles.find(x => x.id === id); return r ? r.name : '-'; },
+      roleClass(id) { return 'tag-role-' + (id || 3); },
+      isSelf(u) { return !!this.me.username && u.username === this.me.username; },
+      initial(u) { return String(u.realName || u.username || '?').slice(0, 1); },
+      when(u) { return u.createdAt || u.created_at || '-'; },
       openAdd() { this.form = { isAdd: true, username: '', real_name: '', password: '', role_id: 3 }; },
       openEdit(u) { this.form = { isAdd: false, id: u.id, username: u.username, real_name: u.realName, password: '', role_id: u.roleId, is_active: u.isActive }; },
       async save() {
@@ -591,21 +599,53 @@
       <div class="page-title">用户管理</div>
       <div class="page-sub">维护系统账号、角色与启用状态</div>
       <div class="panel">
-        <div class="panel-head"><h3>用户列表</h3><button class="btn btn-primary btn-sm" @click="openAdd">+ 新增用户</button></div>
-        <table>
-          <tr><th>用户名</th><th>姓名</th><th>角色</th><th>状态</th><th>创建时间</th><th>操作</th></tr>
-          <tr v-if="!users.length"><td colspan="6" class="empty">暂无用户</td></tr>
-          <tr v-for="u in users" :key="u.id">
-            <td>{{ u.username }}</td><td>{{ u.realName || '-' }}</td><td>{{ roleName(u.roleId) }}</td>
-            <td><span class="tag" :class="u.isActive ? 'tag-ok' : 'tag-stop'">{{ u.isActive ? '启用' : '停用' }}</span></td>
-            <td>{{ u.createdAt || u.created_at || '-' }}</td>
-            <td class="actions-cell">
-              <button class="btn btn-ghost btn-sm" @click="openEdit(u)">编辑</button>
-              <button class="btn btn-ghost btn-sm" @click="toggle(u)">{{ u.isActive ? '停用' : '启用' }}</button>
-              <button class="btn btn-danger btn-sm" @click="del(u)">删除</button>
-            </td>
-          </tr>
-        </table>
+        <div class="panel-head">
+          <div class="head-left">
+            <h3>用户列表</h3>
+            <span class="head-count">共 {{ users.length }} 个账号 · {{ activeCount }} 个启用中</span>
+          </div>
+          <button class="btn btn-primary btn-sm" @click="openAdd">+ 新增用户</button>
+        </div>
+        <div class="table-wrap">
+          <table class="tbl">
+            <thead>
+              <tr>
+                <th>账号</th>
+                <th style="width:120px">角色</th>
+                <th style="width:100px">状态</th>
+                <th style="width:170px">创建时间</th>
+                <th style="width:190px">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="!users.length"><td colspan="5" class="empty-row">暂无用户</td></tr>
+              <tr v-for="u in users" :key="u.id">
+                <td>
+                  <div class="um-user">
+                    <div class="um-avatar" :class="{ off: !u.isActive }">{{ initial(u) }}</div>
+                    <div>
+                      <div class="um-name">
+                        {{ u.realName || '未填姓名' }}
+                        <span v-if="isSelf(u)" class="um-self">当前登录</span>
+                      </div>
+                      <div class="um-login">{{ u.username }}</div>
+                    </div>
+                  </div>
+                </td>
+                <td><span class="tag" :class="roleClass(u.roleId)">{{ roleName(u.roleId) }}</span></td>
+                <td><span class="tag" :class="u.isActive ? 'tag-ok' : 'tag-stop'">{{ u.isActive ? '启用' : '停用' }}</span></td>
+                <td class="um-time">{{ when(u) }}</td>
+                <td>
+                  <div class="row-actions">
+                    <button class="btn btn-ghost btn-sm" @click="openEdit(u)">编辑</button>
+                    <button class="btn btn-ghost btn-sm" @click="toggle(u)">{{ u.isActive ? '停用' : '启用' }}</button>
+                    <button v-if="!isSelf(u)" class="btn btn-danger btn-sm" @click="del(u)">删除</button>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </div>
       <div class="modal-mask" v-if="form" @click.self="form=null">
         <div class="modal modal-sm">
@@ -630,37 +670,146 @@
 
   /* ==================== 操作日志（统一日志） ==================== */
   V.LogsView = {
-    data() { return { rows: [], actions: [], keyword: '', action: '', page: 1, pageSize: 20, total: 0 }; },
+    data() { return { rows: [], actions: [], keyword: '', action: '', page: 1, pageSize: 20, total: 0, open: {} }; },
     async mounted() { await this.loadActions(); await this.load(); },
     methods: {
       async load() {
         const q = new URLSearchParams({ page: this.page, pageSize: this.pageSize });
         if (this.keyword) q.set('keyword', this.keyword);
         if (this.action) q.set('action', this.action);
-        try { const r = await api.get('/api/logs?' + q); this.rows = r.list; this.total = r.total; } catch (e) { this.$toast(e.message, 'err'); }
+        try {
+          const r = await api.get('/api/logs?' + q);
+          // 预处理成视图专用字段：后端落库的 detail 既有纯文本，也有 JSON 字符串
+          // （巡检台账那批日志用 JSON 存 {id,name,detail}，这里统一摊平成 chips）
+          this.rows = (r.list || []).map((x) => {
+            const chips = this.toChips(x.detail);
+            return Object.assign({}, x, {
+              _chips: chips,
+              _act: this.actClass(x.action),
+              _date: this.dateOf(x.created_at),
+              _clock: this.clockOf(x.created_at),
+              _initial: String(x.username || '?').slice(0, 1).toUpperCase(),
+              _long: chips ? (chips.length > 2 || chips.some((c) => c.wide)) : String(x.detail || '').length > 46,
+            });
+          });
+          this.total = r.total;
+        } catch (e) { this.$toast(e.message, 'err'); }
       },
       async loadActions() { try { this.actions = await api.get('/api/logs/actions'); } catch (e) {} },
-      search() { this.page = 1; this.load(); },
-      setPage(p) { if (p < 1 || p > this.totalPages) return; this.page = p; this.load(); }
+      search() { this.page = 1; this.open = {}; this.load(); },
+      reset() { this.keyword = ''; this.action = ''; this.page = 1; this.open = {}; this.load(); },
+      setPage(p) { if (p < 1 || p > this.totalPages) return; this.page = p; this.open = {}; this.load(); },
+      dateOf(s) { const m = String(s || '').match(/^(\d{4}-\d{2}-\d{2})/); return m ? m[1] : (s || '-'); },
+      clockOf(s) { const m = String(s || '').match(/(\d{2}:\d{2}(?::\d{2})?)/); return m ? m[1] : ''; },
+      // 按动作名上色：先判前缀（台账./巡检./报告.），再判关键字，
+      // 否则「台账.修改设备」会被命中「修改」而错配成编辑色
+      actClass(a) {
+        const s = String(a || '');
+        if (s.indexOf('台账.') === 0) return 'tag-act-device';
+        if (s.indexOf('巡检.') === 0 || s.indexOf('报告.') === 0) return 'tag-act-insp';
+        if (s.indexOf('导入') >= 0 || s.indexOf('导出') >= 0 || s.indexOf('下载') >= 0) return 'tag-act-data';
+        if (s.indexOf('删除') >= 0) return 'tag-act-delete';
+        if (s.indexOf('新增') >= 0 || s.indexOf('新建') >= 0 || s.indexOf('上传') >= 0) return 'tag-act-create';
+        if (s.indexOf('状态') >= 0 || s.indexOf('停用') >= 0 || s.indexOf('启用') >= 0 || s.indexOf('指派') >= 0) return 'tag-act-status';
+        if (s.indexOf('登录') >= 0 || s.indexOf('密码') >= 0) return 'tag-act-login';
+        if (s.indexOf('修改') >= 0 || s.indexOf('编辑') >= 0 || s.indexOf('重命名') >= 0 || s.indexOf('追加') >= 0) return 'tag-act-update';
+        return 'tag-act-other';
+      },
+      toChips(d) {
+        const s = String(d == null ? '' : d).trim();
+        if (!s || (s[0] !== '{' && s[0] !== '[')) return null;
+        let o = null;
+        try { o = JSON.parse(s); } catch (e) { return null; }
+        if (Array.isArray(o)) return o.map((v, i) => ({ k: '#' + (i + 1), v: this.chipVal(v) }));
+        if (!o || typeof o !== 'object') return null;
+        const keys = Object.keys(o);
+        if (!keys.length) return null;
+        // 把最能定位对象的字段排到最前，作为这一行的视觉锚点
+        const lead = ['name', 'title', 'contract_no', 'no', 'id'];
+        keys.sort((a, b) => {
+          const ia = lead.indexOf(a), ib = lead.indexOf(b);
+          return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+        });
+        return keys.map((k) => ({ k: this.chipKey(k), v: this.chipVal(o[k]), wide: k === 'detail' }));
+      },
+      chipKey(k) {
+        const M = { id: 'ID', name: '名称', host: '地址', title: '标题', no: '编号', contract_no: '合同号', detail: '变更', mode: '模式', config_version: '配置版本', ok: '结果', file: '文件', step: '步骤', count: '数量' };
+        return M[k] || k;
+      },
+      chipVal(v) {
+        if (v === null || v === undefined || v === '') return '-';
+        if (typeof v === 'boolean') return v ? '是' : '否';
+        if (typeof v === 'object') { try { return JSON.stringify(v); } catch (e) { return String(v); } }
+        return String(v);
+      },
+      isOpen(id) { return !!this.open[id]; },
+      toggleRow(id) { const o = Object.assign({}, this.open); if (o[id]) delete o[id]; else o[id] = 1; this.open = o; }
     },
     computed: { totalPages() { return Math.max(1, Math.ceil(this.total / this.pageSize)); } },
     template: `
     <div>
       <div class="page-title">操作日志</div>
-      <div class="page-sub">系统关键操作审计记录</div>
+      <div class="page-sub">按时间倒序记录登录、增删改与巡检等关键操作</div>
       <div class="panel">
-        <div class="toolbar">
-          <input v-model="keyword" placeholder="搜索用户/详情" style="width:180px" @keyup.enter="search">
-          <select v-model="action"><option value="">全部操作</option><option v-for="a in actions" :value="a">{{ a }}</option></select>
-          <button class="btn btn-ghost" @click="search">查询</button>
+        <div class="panel-head">
+          <div class="head-left">
+            <h3>审计流水</h3>
+            <span class="head-count">共 {{ total }} 条记录</span>
+          </div>
+          <button class="btn btn-ghost btn-sm" @click="load">刷新</button>
         </div>
-        <table>
-          <tr><th>时间</th><th>用户</th><th>操作</th><th>详情</th><th>IP</th></tr>
-          <tr v-if="!rows.length"><td colspan="5" class="empty">暂无日志</td></tr>
-          <tr v-for="r in rows" :key="r.id">
-            <td>{{ r.created_at }}</td><td>{{ r.username }}</td><td>{{ r.action }}</td><td>{{ r.detail }}</td><td>{{ r.ip }}</td>
-          </tr>
-        </table>
+        <div class="toolbar">
+          <input v-model="keyword" placeholder="搜索用户 / 详情关键词" style="width:210px" @keyup.enter="search">
+          <select v-model="action" @change="search" style="min-width:160px"><option value="">全部操作</option><option v-for="a in actions" :value="a">{{ a }}</option></select>
+          <button class="btn btn-primary btn-sm" @click="search">查询</button>
+          <button class="btn btn-ghost btn-sm" @click="reset">重置</button>
+        </div>
+        <div class="table-wrap">
+          <table class="tbl logs-table">
+            <thead>
+              <tr>
+                <th class="c-time">时间</th>
+                <th class="c-user">用户</th>
+                <th class="c-act">操作</th>
+                <th>详情</th>
+                <th class="c-ip">来源 IP</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="!rows.length"><td colspan="5" class="empty-row">暂无匹配的日志记录</td></tr>
+              <tr v-for="r in rows" :key="r.id">
+                <td>
+                  <div class="log-time">
+                    <div class="log-date">{{ r._date }}</div>
+                    <div class="log-clock">{{ r._clock || '-' }}</div>
+                  </div>
+                </td>
+                <td>
+                  <div class="log-user" :title="r.username">
+                    <div class="log-avatar">{{ r._initial }}</div>
+                    <span>{{ r.username || '系统' }}</span>
+                  </div>
+                </td>
+                <td><span class="tag" :class="r._act">{{ r.action }}</span></td>
+                <td>
+                  <div class="log-detail">
+                    <template v-if="r._chips">
+                      <div class="log-chips" :class="{ open: isOpen(r.id) }">
+                        <template v-for="(c, i) in r._chips" :key="i">
+                          <span v-if="!c.wide || isOpen(r.id)" class="chip" :class="{ 'chip-lead': i === 0, 'chip-wide': c.wide }" :title="c.k + '：' + c.v"><b>{{ c.k }}</b>{{ c.v }}</span>
+                        </template>
+                      </div>
+                    </template>
+                    <div v-else-if="r.detail" class="log-text" :class="{ open: isOpen(r.id) }">{{ r.detail }}</div>
+                    <span v-else class="log-none">—</span>
+                    <button v-if="r._long" class="log-more" @click="toggleRow(r.id)">{{ isOpen(r.id) ? '收起' : '展开' }}</button>
+                  </div>
+                </td>
+                <td><span class="log-ip">{{ r.ip || '-' }}</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
         <div class="pagination">
           <span>第 {{ page }} / {{ totalPages }} 页，共 {{ total }} 条</span>
           <select v-model.number="pageSize" @change="setPage(1)" title="每页显示条数">

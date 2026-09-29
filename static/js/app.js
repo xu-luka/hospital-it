@@ -1114,6 +1114,9 @@
   };
 
   /* ==================== 用户管理 ==================== */
+  // 注意：这份 UsersView 会被后加载的 contract-views.js 同名注册覆盖
+  // （index.html 里 contract-views.js 排在 app.js 之后）。
+  // 页面上实际生效的是 contract-views.js 那份，改这个文件不会有效果，保留仅为兼容旧路由。
   V.UsersView = {
     template: `
     <div>
@@ -1204,6 +1207,7 @@
   };
 
   /* ==================== 操作日志 ==================== */
+  // 同上：实际生效的是 contract-views.js 里的 LogsView（本文件这份被覆盖）
   V.LogsView = {
     template: `
     <div>
