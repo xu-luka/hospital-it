@@ -342,32 +342,32 @@
       </div>
       <div class="card">
         <div class="table-wrap">
-          <table class="tbl">
+          <table class="tbl iss-table">
             <thead>
               <tr>
-                <th style="width:36px"><input type="checkbox" :checked="allChecked" @change="toggleAll" title="全选本页"></th>
-                <th>单号</th><th>标题</th><th>分类</th><th>二级模块</th><th>紧急程度</th><th>状态</th>
-                <th>报障科室</th><th>报障人</th><th>处理人</th><th>问题记录时间</th><th>操作</th>
+                <th class="c-chk"><input type="checkbox" :checked="allChecked" @change="toggleAll" title="全选本页"></th>
+                <th class="c-no">单号</th><th>标题</th><th class="c-cat">分类 / 模块</th>
+                <th class="c-urg">紧急程度</th><th class="c-st">状态</th>
+                <th class="c-user">报障科室 / 人</th><th class="c-assign">处理人</th>
+                <th class="c-time">记录时间</th><th class="c-ops">操作</th>
               </tr>
             </thead>
             <tbody>
               <tr v-for="it in list" :key="it.id">
                 <td><input type="checkbox" :value="it.id" v-model="selectedIds"></td>
-                <td class="link" @click="open(it.id)">{{ it.no }}</td>
-                <td><span class="link" @click="open(it.id)">{{ it.title }}</span></td>
-                <td>{{ it.category }}</td>
-                <td>{{ it.module || '-' }}</td>
+                <td class="mono link" @click="open(it.id)">{{ it.no }}</td>
+                <td><div class="iss-title link" :title="it.title" @click="open(it.id)">{{ it.title }}</div></td>
+                <td><span class="cell-strong">{{ it.category }}</span><span class="cell-sub">{{ it.module || '-' }}</span></td>
                 <td><span :class="URGENCY_TAG[it.urgency]" class="tag">{{ it.urgency }}</span></td>
                 <td><span :class="STATUS_TAG[it.status]" class="tag">{{ it.status_text }}</span></td>
-                <td>{{ it.department }}</td>
-                <td>{{ it.reporter }}</td>
+                <td><span class="cell-strong iss-dept">{{ it.department }}</span><span class="cell-sub">{{ it.reporter }}</span></td>
                 <td>{{ it.assignee_name || '-' }}</td>
-                <td>{{ fmt(it.report_time) }}</td>
-                <td>
-                  <button class="btn btn-outline btn-sm" @click="open(it.id)">详情</button>
+                <td class="mono">{{ fmt(it.report_time) }}</td>
+                <td class="ops">
+                  <div class="row-actions"><button class="btn btn-ghost btn-sm" @click="open(it.id)">详情</button></div>
                 </td>
               </tr>
-              <tr v-if="!list.length"><td colspan="12" class="empty-row">暂无问题记录</td></tr>
+              <tr v-if="!list.length"><td colspan="10" class="empty-row">暂无问题记录</td></tr>
             </tbody>
           </table>
         </div>

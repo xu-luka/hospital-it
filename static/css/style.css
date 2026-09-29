@@ -759,3 +759,81 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .tag-act-login  { background: #f1f5f9; color: #475569; }
 .tag-act-other  { background: #f1f5f9; color: #475569; }
 .doct-body p:last-child { margin-bottom: 0; }
+
+/* ==================== 列表统一规范（各模块共用） ====================
+   约定：表格一律 <div class="table-wrap"><table class="tbl"> + thead/tbody，
+   单元格语义用下面这几个类，别再写裸 <table>（否则吃不到 .tbl 的间距与 hover）。 */
+.tbl .num  { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tbl .mono { font-family: Consolas, "Courier New", monospace; white-space: nowrap; font-size: 12.5px; }
+.tbl .ops  { white-space: nowrap; text-align: right; }
+/* 单元格内主/副两行：主信息加粗，副信息灰字小号，避免再堆一列 */
+.tbl .cell-strong { font-weight: 600; color: var(--navy-800); }
+.tbl .cell-sub { display: block; font-size: 12px; color: var(--gray); margin-top: 2px; line-height: 1.35; }
+/* 合计 / 汇总行 */
+.tbl tfoot td { background: #f8fafc; font-weight: 600; border-top: 2px solid var(--border); border-bottom: none; }
+/* 旧的操作列写法（.actions-cell）统一成与 .row-actions 一致的紧凑按钮组 */
+.actions-cell { display: flex; align-items: center; gap: 2px; }
+.actions-cell .btn { padding: 4px 10px; font-size: 12.5px; }
+
+/* ---------- 到期提醒 ---------- */
+.remind-table { table-layout: fixed; }
+.remind-table .c-no    { width: 150px; }
+.remind-table .c-party { width: 190px; }
+.remind-table .c-date  { width: 112px; }
+.remind-table .c-days  { width: 132px; }
+.remind-table .c-status{ width: 96px; }
+.remind-table .c-ops   { width: 92px; }
+.remind-title { font-weight: 600; color: var(--navy-800); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 乙方多为长公司名，窄列里会折成两行，统一截断并靠 title 看全称 */
+.remind-party { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------- 工单列表 ---------- */
+.iss-table { table-layout: fixed; }
+.iss-table .c-chk   { width: 38px; }
+.iss-table .c-no    { width: 140px; }
+.iss-table .c-cat   { width: 96px; }
+.iss-table .c-mod   { width: 100px; }
+.iss-table .c-urg   { width: 84px; }
+.iss-table .c-st    { width: 84px; }
+.iss-table .c-user  { width: 124px; }
+.iss-table .c-assign{ width: 96px; }
+.iss-table .c-time  { width: 132px; }
+.iss-table .c-ops   { width: 84px; }
+.iss-title { font-weight: 600; color: var(--navy-800); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.iss-title:hover { color: var(--primary); }
+.iss-dept { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------- 设备台账 ---------- */
+.dev-table { table-layout: fixed; }
+.dev-table .c-name  { width: 20%; }
+.dev-table .c-type  { width: 9%; }
+.dev-table .c-host  { width: 15%; }
+.dev-table .c-user  { width: 11%; }
+.dev-table .c-pwd   { width: 9%; }
+.dev-table .c-last  { width: 10%; }
+.dev-table .c-state { width: 7%; }
+.dev-host { font-family: Consolas, "Courier New", monospace; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dev-name { font-weight: 600; color: var(--navy-800); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dev-sub { display: block; font-size: 12px; color: var(--gray); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------- 巡检报告 ---------- */
+.rep-table { table-layout: fixed; }
+.rep-table .c-type  { width: 110px; }
+.rep-table .c-time  { width: 150px; }
+.rep-table .c-size  { width: 96px; }
+.rep-table .c-ops   { width: 116px; }
+.rep-name { font-weight: 600; color: var(--navy-800); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------- 详情弹窗内嵌小表（设备清单 / 付款记录 / 导入结果） ---------- */
+.mini-table { table-layout: fixed; font-size: 12.5px; }
+.mini-table th { padding: 8px 10px; font-size: 12.5px; }
+.mini-table td { padding: 8px 10px; }
+.mini-table .c-idx  { width: 42px; }
+.mini-table .c-qty  { width: 64px; }
+.mini-table .c-money{ width: 104px; }
+.mini-table .c-date { width: 108px; }
+.mini-table .c-row  { width: 56px; }
+.mini-table .c-res  { width: 84px; }
+.mini-table .c-ops  { width: 72px; }
+.imp-fail { color: var(--danger); }
+.imp-skip { color: var(--gray); }

@@ -59,31 +59,32 @@
       </div>
 
       <div class="card">
-        <table class="tbl">
-          <thead>
-            <tr>
-              <th style="width:16%">设备名称</th>
-              <th style="width:10%">类型</th>
-              <th style="width:15%">地址 / 端口</th>
-              <th style="width:12%">登录账号</th>
-              <th style="width:9%">口令</th>
-              <th style="width:9%">上次巡检</th>
-              <th style="width:7%">状态</th>
-              <th>操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-if="!rows.length">
-              <td colspan="8" class="empty-row">暂无设备</td>
-            </tr>
-            <tr v-for="r in rows" :key="r.id">
-              <td>
-                <div style="font-weight:600">{{ r.name }}</div>
-                <div class="muted" style="font-size:12px">{{ r.remark || r.location || '-' }}</div>
-              </td>
-              <td>{{ r.osLabel }}</td>
-              <td>{{ r.host }}<span v-if="r.port" class="muted">:{{ r.port }}</span></td>
-              <td>{{ r.auth_username || '-' }}</td>
+        <div class="table-wrap">
+          <table class="tbl dev-table">
+            <thead>
+              <tr>
+                <th class="c-name">设备名称</th>
+                <th class="c-type">类型</th>
+                <th class="c-host">地址 / 端口</th>
+                <th class="c-user">登录账号</th>
+                <th class="c-pwd">口令</th>
+                <th class="c-last">上次巡检</th>
+                <th class="c-state">状态</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="!rows.length">
+                <td colspan="8" class="empty-row">暂无设备</td>
+              </tr>
+              <tr v-for="r in rows" :key="r.id">
+                <td :title="r.name">
+                  <div class="dev-name">{{ r.name }}</div>
+                  <span class="dev-sub">{{ r.remark || r.location || '-' }}</span>
+                </td>
+                <td>{{ r.osLabel }}</td>
+                <td><span class="dev-host">{{ r.host }}<span class="muted" v-if="r.port">:{{ r.port }}</span></span></td>
+                <td>{{ r.auth_username || '-' }}</td>
               <td>
                 <span v-if="r.has_password && r.password_encrypted" class="dev-badge ok">已加密保存</span>
                 <span v-else-if="r.has_password" class="dev-badge warn">明文</span>
@@ -111,7 +112,8 @@
               </td>
             </tr>
           </tbody>
-        </table>
+          </table>
+        </div>
       </div>
 
       <!-- 自检结果 -->

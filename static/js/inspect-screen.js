@@ -301,36 +301,40 @@
       </div>
 
       <div class="card">
-        <table class="tbl">
-          <thead>
-            <tr>
-              <th style="width:44%">报告名称</th>
-              <th style="width:14%">类型</th>
-              <th style="width:16%">生成时间</th>
-              <th style="width:10%">大小</th>
-              <th style="width:16%">操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="r in rows" :key="r.name">
-              <td>{{ r.name }}</td>
-              <td>
-                <span class="dev-badge" :class="r.weekly ? 'warn' : 'ok'">{{ r.weekly ? '周报' : '巡检报告' }}</span>
-              </td>
-              <td>{{ r.stamp || '-' }}</td>
-              <td>{{ sizeText(r.size) }}</td>
-              <td>
-                <button class="btn btn-outline btn-sm" @click="preview(r)">预览</button>
-                <button class="btn btn-outline btn-sm" @click="download(r)">下载</button>
-              </td>
-            </tr>
-            <tr v-if="!rows.length">
-              <td colspan="5" style="text-align:center;color:#8a94a6;padding:26px">
-                还没有报告。点击右上角「生成巡检报告」，或等待每周自动生成的周报。
-              </td>
-            </tr>
-          </tbody>
-        </table>
+        <div class="table-wrap">
+          <table class="tbl rep-table">
+            <thead>
+              <tr>
+                <th>报告名称</th>
+                <th class="c-type">类型</th>
+                <th class="c-time">生成时间</th>
+                <th class="c-size">大小</th>
+                <th class="c-ops">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="r in rows" :key="r.name">
+                <td><div class="rep-name" :title="r.name">{{ r.name }}</div></td>
+                <td>
+                  <span class="dev-badge" :class="r.weekly ? 'warn' : 'ok'">{{ r.weekly ? '周报' : '巡检报告' }}</span>
+                </td>
+                <td class="mono">{{ r.stamp || '-' }}</td>
+                <td class="num">{{ sizeText(r.size) }}</td>
+                <td class="ops">
+                  <div class="row-actions">
+                    <button class="btn btn-ghost btn-sm" @click="preview(r)">预览</button>
+                    <button class="btn btn-ghost btn-sm" @click="download(r)">下载</button>
+                  </div>
+                </td>
+              </tr>
+              <tr v-if="!rows.length">
+                <td colspan="5" class="empty-row">
+                  还没有报告。点击右上角「生成巡检报告」，或等待每周自动生成的周报。
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </div>
 
       <div class="modal-mask" v-if="pv.open">

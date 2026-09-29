@@ -27,32 +27,68 @@
       <div class="page-title">到期提醒</div>
       <div class="page-sub">已过期与 30 天内到期的合同</div>
       <div class="panel" style="margin-bottom:20px">
-        <div class="panel-head"><h3>已过期（{{ overdue.length }}）</h3></div>
-        <table v-if="overdue.length">
-          <tr><th>合同编号</th><th>合同名称</th><th>乙方</th><th>到期日期</th><th>逾期情况</th><th>状态</th><th>操作</th></tr>
-          <tr v-for="r in overdue" :key="r.id">
-            <td>{{ r.contract_no }}</td><td>{{ r.title }}</td><td>{{ r.party_b }}</td>
-            <td>{{ r.end_date }}</td>
-            <td><span class="tag tag-over">已过期 {{ Math.abs(r.days_left) }} 天</span></td>
-            <td><span class="tag" :class="statusTag(r.status)">{{ r.status }}</span></td>
-            <td><a @click="goDetail(r.id)" style="cursor:pointer">详情</a></td>
-          </tr>
-        </table>
-        <div v-else class="empty">暂无已过期合同</div>
+        <div class="panel-head">
+          <div class="head-left">
+            <h3>已过期</h3>
+            <span class="head-count">{{ overdue.length }} 份已过服务期</span>
+          </div>
+        </div>
+        <div class="table-wrap" v-if="overdue.length">
+          <table class="tbl remind-table">
+            <thead>
+              <tr>
+                <th class="c-no">合同编号</th><th>合同名称</th><th class="c-party">乙方</th>
+                <th class="c-date">到期日期</th><th class="c-days">逾期情况</th><th class="c-status">状态</th><th class="c-ops">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="r in overdue" :key="r.id">
+                <td class="mono">{{ r.contract_no }}</td>
+                <td><div class="remind-title" :title="r.title">{{ r.title }}</div></td>
+                <td><div class="remind-party" :title="r.party_b">{{ r.party_b || '-' }}</div></td>
+                <td class="mono">{{ r.end_date }}</td>
+                <td><span class="tag tag-over">已过期 {{ Math.abs(r.days_left) }} 天</span></td>
+                <td><span class="tag" :class="statusTag(r.status)">{{ r.status }}</span></td>
+                <td class="ops">
+                  <div class="row-actions"><button class="btn btn-ghost btn-sm" @click="goDetail(r.id)">详情</button></div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div v-else class="empty-row">暂无已过期合同</div>
       </div>
       <div class="panel">
-        <div class="panel-head"><h3>临期合同（{{ soon.length }}）</h3></div>
-        <table v-if="soon.length">
-          <tr><th>合同编号</th><th>合同名称</th><th>乙方</th><th>到期日期</th><th>剩余天数</th><th>状态</th><th>操作</th></tr>
-          <tr v-for="r in soon" :key="r.id">
-            <td>{{ r.contract_no }}</td><td>{{ r.title }}</td><td>{{ r.party_b }}</td>
-            <td>{{ r.end_date }}</td>
-            <td><span class="tag" :class="r.days_left <= 7 ? 'tag-over' : 'tag-warn'">剩 {{ r.days_left }} 天</span></td>
-            <td><span class="tag" :class="statusTag(r.status)">{{ r.status }}</span></td>
-            <td><a @click="goDetail(r.id)" style="cursor:pointer">详情</a></td>
-          </tr>
-        </table>
-        <div v-else class="empty">近 30 天无到期合同</div>
+        <div class="panel-head">
+          <div class="head-left">
+            <h3>临期合同</h3>
+            <span class="head-count">{{ soon.length }} 份将在 30 天内到期</span>
+          </div>
+        </div>
+        <div class="table-wrap" v-if="soon.length">
+          <table class="tbl remind-table">
+            <thead>
+              <tr>
+                <th class="c-no">合同编号</th><th>合同名称</th><th class="c-party">乙方</th>
+                <th class="c-date">到期日期</th><th class="c-days">剩余天数</th><th class="c-status">状态</th><th class="c-ops">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="r in soon" :key="r.id">
+                <td class="mono">{{ r.contract_no }}</td>
+                <td><div class="remind-title" :title="r.title">{{ r.title }}</div></td>
+                <td><div class="remind-party" :title="r.party_b">{{ r.party_b || '-' }}</div></td>
+                <td class="mono">{{ r.end_date }}</td>
+                <td><span class="tag" :class="r.days_left <= 7 ? 'tag-over' : 'tag-warn'">剩 {{ r.days_left }} 天</span></td>
+                <td><span class="tag" :class="statusTag(r.status)">{{ r.status }}</span></td>
+                <td class="ops">
+                  <div class="row-actions"><button class="btn btn-ghost btn-sm" @click="goDetail(r.id)">详情</button></div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div v-else class="empty-row">近 30 天无到期合同</div>
       </div>
     </div>`
   };
@@ -192,11 +228,21 @@
               <div style="padding:10px 14px;border-radius:8px;font-size:13px" :class="importResult.failed.length ? 'imp-warn' : 'imp-ok'">
                 导入完成：成功 <b>{{ importResult.success }}</b> 份，跳过 <b>{{ importResult.skipped.length }}</b> 份（编号已存在），失败 <b>{{ importResult.failed.length }}</b> 条
               </div>
-              <table v-if="importResult.failed.length || importResult.skipped.length" style="margin-top:10px">
-                <tr><th>行号</th><th>合同编号</th><th>结果</th></tr>
-                <tr v-for="f in importResult.failed" :key="'f'+f.row+String(f.contract_no)"><td>{{ f.row }}</td><td>{{ f.contract_no || '-' }}</td><td style="color:var(--danger)">失败：{{ f.reason }}</td></tr>
-                <tr v-for="s in importResult.skipped" :key="'s'+s.row+String(s.contract_no)"><td>{{ s.row }}</td><td>{{ s.contract_no }}</td><td class="muted">跳过：{{ s.reason }}</td></tr>
-              </table>
+              <div class="table-wrap" v-if="importResult.failed.length || importResult.skipped.length" style="margin-top:10px">
+                <table class="tbl mini-table">
+                  <thead><tr><th class="c-row">行号</th><th>合同编号</th><th class="c-res">结果</th><th>说明</th></tr></thead>
+                  <tbody>
+                    <tr v-for="f in importResult.failed" :key="'f'+f.row+String(f.contract_no)">
+                      <td class="num">{{ f.row }}</td><td class="mono">{{ f.contract_no || '-' }}</td>
+                      <td><span class="tag tag-stop">失败</span></td><td class="imp-fail">{{ f.reason }}</td>
+                    </tr>
+                    <tr v-for="s in importResult.skipped" :key="'s'+s.row+String(s.contract_no)">
+                      <td class="num">{{ s.row }}</td><td class="mono">{{ s.contract_no }}</td>
+                      <td><span class="tag tag-u0">跳过</span></td><td class="imp-skip">{{ s.reason }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
           <div class="modal-foot">
@@ -299,18 +345,29 @@
           </div>
           <template v-if="(c.devices && c.devices.length) || c.delivery_req || c.accept_date">
             <div class="detail-sec">设备与交付</div>
-            <table v-if="c.devices && c.devices.length" style="margin-bottom:10px">
-              <tr><th>#</th><th>设备名称</th><th>型号规格</th><th>数量</th><th>单价(元)</th><th>总价(元)</th><th>备注</th></tr>
-              <tr v-for="(dv, i) in c.devices" :key="dv.id">
-                <td>{{ i + 1 }}</td><td>{{ dv.name }}</td><td>{{ dv.model || '-' }}</td>
-                <td>{{ dv.quantity }}</td><td>{{ dv.unit_price > 0 ? fmtMoney(dv.unit_price) : '-' }}</td>
-                <td>{{ dv.unit_price > 0 ? fmtMoney(dv.unit_price * dv.quantity) : '-' }}</td><td>{{ dv.remark || '-' }}</td>
-              </tr>
-              <tr>
-                <td colspan="5" style="text-align:right;font-weight:600;color:#475569">合计（{{ c.devices.length }} 种，{{ c.device_count }} 台/件）</td>
-                <td style="font-weight:700;color:var(--primary)">￥{{ fmtMoney(deviceAmount(c.devices)) }}</td><td></td>
-              </tr>
-            </table>
+            <div class="table-wrap" v-if="c.devices && c.devices.length" style="margin-bottom:10px">
+              <table class="tbl mini-table">
+                <thead><tr><th class="c-idx">#</th><th>设备名称</th><th>型号规格</th><th class="c-qty">数量</th><th class="c-money">单价(元)</th><th class="c-money">总价(元)</th><th>备注</th></tr></thead>
+                <tbody>
+                  <tr v-for="(dv, i) in c.devices" :key="dv.id">
+                    <td class="num">{{ i + 1 }}</td>
+                    <td class="cell-strong">{{ dv.name }}</td>
+                    <td>{{ dv.model || '-' }}</td>
+                    <td class="num">{{ dv.quantity }}</td>
+                    <td class="num">{{ dv.unit_price > 0 ? fmtMoney(dv.unit_price) : '-' }}</td>
+                    <td class="num">{{ dv.unit_price > 0 ? fmtMoney(dv.unit_price * dv.quantity) : '-' }}</td>
+                    <td>{{ dv.remark || '-' }}</td>
+                  </tr>
+                </tbody>
+                <tfoot>
+                  <tr>
+                    <td colspan="5" style="text-align:right;color:#475569">合计（{{ c.devices.length }} 种，{{ c.device_count }} 台/件）</td>
+                    <td class="num" style="color:var(--primary)">￥{{ fmtMoney(deviceAmount(c.devices)) }}</td>
+                    <td></td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
             <div class="cm-grid">
               <div class="item"><b>验收日期</b><span>{{ fmtDate(c.accept_date) }}</span></div>
               <div class="item full" v-if="c.delivery_req"><b>交货要求</b><span>{{ c.delivery_req }}</span></div>
@@ -351,14 +408,22 @@
               <span style="margin:0 10px;color:#cbd5e1">|</span>
               <span class="muted">总额 ￥{{ fmtMoney(c.amount) }}（{{ (c.payments || []).length }} 笔）</span>
             </div>
-            <table v-if="c.payments && c.payments.length" style="margin-bottom:10px">
-              <tr><th>日期</th><th>金额(元)</th><th>方式</th><th>备注</th><th>操作</th></tr>
-              <tr v-for="p in c.payments" :key="p.id">
-                <td>{{ p.pay_date }}</td><td>￥{{ fmtMoney(p.amount) }}</td>
-                <td>{{ p.method || '-' }}</td><td>{{ p.remark || '-' }}</td>
-                <td><a style="color:var(--danger);cursor:pointer" @click="delPayment(p)">删除</a></td>
-              </tr>
-            </table>
+            <div class="table-wrap" v-if="c.payments && c.payments.length" style="margin-bottom:10px">
+              <table class="tbl mini-table">
+                <thead><tr><th class="c-date">日期</th><th class="c-money">金额(元)</th><th>方式</th><th>备注</th><th class="c-ops">操作</th></tr></thead>
+                <tbody>
+                  <tr v-for="p in c.payments" :key="p.id">
+                    <td class="mono">{{ p.pay_date }}</td>
+                    <td class="num">￥{{ fmtMoney(p.amount) }}</td>
+                    <td>{{ p.method || '-' }}</td>
+                    <td>{{ p.remark || '-' }}</td>
+                    <td class="ops">
+                      <div class="row-actions"><button class="btn btn-danger btn-sm" @click="delPayment(p)">删除</button></div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
             <div class="empty" v-else style="padding:10px;margin-bottom:10px">暂无付款记录</div>
             <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;background:#f8fafc;border:1px dashed var(--border);border-radius:8px;padding:10px">
               <input v-model.number="payForm.amount" type="number" min="0" placeholder="金额" style="width:110px;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px">
