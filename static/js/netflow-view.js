@@ -48,6 +48,25 @@
         <div v-else-if="!devices.length" class="net-tip">
           还没有可采集的交换机。请到「机房巡检 → 设备台账」添加类型为「网络交换机」的设备并启用。
         </div>
+        <div v-if="perDevice.length" class="net-diag">
+          <span class="net-diag-toggle" @click="showDiag=!showDiag">
+            本轮采集明细：成功 {{ okCount }} 台 · 失败 {{ failCount }} 台
+            <b>{{ showDiag ? '▲ 收起' : '▼ 展开看原因' }}</b>
+          </span>
+          <ul v-show="showDiag || failAll" class="net-diag-list">
+            <li v-for="d in perDevice" :key="d.deviceId">
+              <span class="dev-badge" :class="d.ok ? 'ok' : 'err'">{{ d.ok ? '成功' : '失败' }}</span>
+              <span class="mono">{{ d.host }}</span>
+              <span class="net-diag-name">{{ d.name }}</span>
+              <span v-if="d.ok" class="cell-sub">
+                {{ d.via === 'exec' ? 'exec 通道' : 'shell 通道' }} · {{ d.style }} · {{ d.ports }} 个端口 · ARP {{ d.arp }} / MAC {{ d.mac }}
+                <template v-if="d.truncated">· 输出被截断</template>
+              </span>
+              <span v-else class="cell-sub err-text">{{ d.error }}</span>
+              <div v-if="!d.ok && d.diag" class="net-diag-cmds">命令明细：{{ d.diag }}</div>
+            </li>
+          </ul>
+        </div>
       </div>
 
       <div class="filter-bar">
@@ -322,6 +341,7 @@
         saving: false,
         series: null,
         cfgForm: null,
+        showDiag: false,
         CW: 680, CH: 180, PL: 8, PR: 8
       };
     },
@@ -335,6 +355,15 @@
         const u = window.HisUser && window.HisUser.user;
         return !!(u && (u.role_id === 1 || u.role_id === 2));
       },
+      /** 上一轮逐台的采集结果（含每台失败的真实原因） */
+      perDevice() {
+        const s = this.status && this.status.lastSummary;
+        return (s && s.perDevice) || [];
+      },
+      okCount() { return this.perDevice.filter((d) => d.ok).length; },
+      failCount() { return this.perDevice.filter((d) => !d.ok).length; },
+      /** 全军覆没时默认展开明细 —— 这时候用户最需要的就是原因 */
+      failAll() { return this.perDevice.length > 0 && this.okCount === 0; },
       minutesLabel() {
         const w = WINDOWS.filter((x) => x.v === this.minutes)[0];
         return w ? w.label.replace('最近 ', '') : (this.minutes + ' 分钟');

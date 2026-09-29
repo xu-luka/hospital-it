@@ -15,7 +15,7 @@
  * 解析部分全部写成纯函数（parseXxx），便于用真实设备输出样本离线校验。
  */
 
-const { sshConnect, sshExec } = require('./lib/sshutil');
+const { sshConnect, sshExec, friendlySshError } = require('./lib/sshutil');
 
 /* ---------------- 通用小工具 ---------------- */
 
@@ -123,7 +123,9 @@ function parseDisplayInterface(text) {
       continue;
     }
     if (!cur) continue;
-    if (cur.linkUp === null && /line protocol is/i.test(line)) {
+    // 「Line protocol state: UP」/「line protocol is up」——协议状态比物理状态更能说明口通不通，
+    // 见到就覆盖（H3C 在物理 UP、协议 DOWN 时会写成 current state: UP + Line protocol state: DOWN）
+    if (/^line protocol\s+(?:state|is)/i.test(line)) {
       cur.linkUp = !/down/i.test(line);
       continue;
     }
@@ -306,60 +308,288 @@ function buildPortRows(ports, arp, macTable) {
 
 const STYLES = {
   display: {
+    vendor: '华为/H3C 风格',
     version: 'display version',
+    // 关分页是必须的：display interface 在 24 口交换机上就有上百行，
+    // 不关分页会被 ---- More ---- 卡住，只回前 50 行，后面的端口全丢。
+    paging: ['screen-length temporary 0', 'screen-length disable'],
     iface: 'display interface',
     arp: 'display arp',
     mac: 'display mac-address'
   },
   show: {
+    vendor: '思科/锐捷 风格',
     version: 'show version',
+    paging: ['terminal length 0'],
     iface: 'show interfaces',
     arp: 'show arp',
     mac: 'show mac address-table'
   }
 };
 
+/** 命令报错的样子（华为 Error: Unrecognized、思科 % Invalid input、H3C % Unrecognized） */
+const BAD_OUTPUT_RE = /Unrecognized|Invalid|Unknown command|Incomplete|Error:|^\s*%/im;
+
 function looksUnsupported(out) {
-  return !out || out.length < 40 || /Unrecognized|Invalid|Unknown command|Incomplete|Error:/i.test(out.slice(0, 200));
+  const t = String(out || '');
+  if (t.trim().length < 40) return true;
+  return BAD_OUTPUT_RE.test(t.slice(0, 200));
+}
+
+function noteDiag(diag, r) {
+  if (diag) diag.push({ cmd: r.cmd, ok: !!r.ok, bytes: r.bytes || 0 });
+}
+
+function friendlyErr(e) {
+  const m = String((e && e.message) || e);
+  try { return friendlySshError(e); } catch (e2) { return m; }
+}
+
+/* -------- shell 交互通道（主路径，与巡检 lib/switch.js 同一套路） --------
+ *
+ * 为什么要走 shell 而不是 exec：
+ *   交换机（尤其华为/H3C）普遍只对 SSH 开放交互式 shell，exec 通道要么直接不开，
+ *   要么每条命令一个新会话 —— 那样连「关分页」都做不到，display interface 只能拿到
+ *   第一屏。巡检能采到这些设备，走的正是 shell。
+ */
+
+const PROMPT_RE = /^(<[^>\n]{1,60}>|\[[^\]\n]{1,60}\]|[A-Za-z0-9_.\-()]{1,40}[>#])\s*$/;
+
+function openShell(conn) {
+  return new Promise((resolve, reject) => {
+    conn.shell({ term: 'vt100', cols: 200, rows: 50 }, (err, stream) => {
+      if (err) reject(err);
+      else resolve(stream);
+    });
+  });
+}
+
+/**
+ * 等待条件满足或超时；期间自动处理 ---- More ---- 翻页。
+ *
+ * 额外做了「静默/空转早退」：设备停止吐字（或压根没响应）就立刻收工。
+ * 没有这道闸，一台死设备要按 45 秒 × 4 条命令算，八台交换机能拖到十分钟以上，
+ * 5 分钟的采集间隔直接被挤爆（下一轮还会因为「上一轮未结束」被跳过）。
+ */
+function waitFor(getBuf, stream, cond, timeoutMs, quiet) {
+  const q = quiet || {};
+  const quietMs = q.quietMs || Math.min(6000, Math.max(1500, Math.round(timeoutMs / 4)));
+  const emptyMs = q.emptyMs || Math.min(12000, Math.max(3000, Math.round(timeoutMs / 2)));
+  const deadline = Date.now() + timeoutMs;
+  const start = Date.now();
+  let lastLen = -1;
+  let lastChange = Date.now();
+  return new Promise((resolve) => {
+    const tick = () => {
+      const buf = getBuf();
+      if (buf.length !== lastLen) { lastLen = buf.length; lastChange = Date.now(); }
+      if (/----\s*More\s*----/i.test(buf.slice(-80))) {
+        try { stream.write(' '); } catch (e) { /* 忽略 */ }
+        lastChange = Date.now();
+      }
+      if (cond(buf)) { resolve(true); return; }
+      const now = Date.now();
+      if (now > deadline) { resolve(false); return; }
+      if (buf.length === 0 && now - start > emptyMs) { resolve(false); return; }
+      if (buf.length > 0 && now - lastChange > quietMs) { resolve(false); return; }
+      setTimeout(tick, 300);
+    };
+    tick();
+  });
+}
+
+/** 去掉命令回显行、分页符与首尾提示符行（输出中间的 [xxx] 段标题保留，避免误删内容） */
+function stripShell(text, cmd) {
+  const cmdTrim = String(cmd).trim();
+  const lines = String(text || '').split(/\r?\n/);
+  const out = [];
+  for (const ln of lines) {
+    const t = ln.trim();
+    if (t === cmdTrim) continue;
+    if (/^Info: The max number of VTY/i.test(t)) continue;
+    if (/^of current VTY users on line is/i.test(t)) continue;
+    if (/^The current login time is/i.test(t)) continue;
+    if (/----\s*More\s*----/i.test(t)) continue;
+    out.push(ln);
+  }
+  while (out.length && out[0].trim() === '') out.shift();
+  while (out.length && PROMPT_RE.test(out[0].trim())) out.shift();
+  while (out.length && out[out.length - 1].trim() === '') out.pop();
+  while (out.length && PROMPT_RE.test(out[out.length - 1].trim())) out.pop();
+  return out.join('\n').trim();
+}
+
+/**
+ * 建一条 shell 会话，顺序发命令。
+ * 每条命令都是「清空缓冲 → 发送 → 等提示符」，返回原始输出与去回显后的文本。
+ */
+async function openSession(conn) {
+  const stream = await openShell(conn);
+  let buf = '';
+  stream.on('data', (d) => {
+    buf += d.toString();
+    // 一台 48 口交换机的 display interface 约 60~100KB；留足余量再裁尾
+    if (buf.length > 1200000) buf = buf.slice(-1200000);
+  });
+  stream.stderr.on('data', () => { /* 静默 */ });
+  stream.stderr.on('error', () => { /* 静默 */ });
+  stream.on('error', () => { /* 静默 */ });
+
+  const lastLine = (s) => (s.replace(/\r/g, '').trim().split('\n').pop() || '').trim();
+
+  return {
+    /** 等登录 banner 后的第一个提示符 */
+    waitReady(ms) {
+      return waitFor(() => buf, stream, (b) => PROMPT_RE.test(lastLine(b)), ms);
+    },
+    async send(cmd, ms) {
+      buf = '';
+      const started = Date.now();
+      try { stream.write(cmd + '\n'); } catch (e) { /* 流已关，交给上层兜 */ }
+      const ok = await waitFor(() => buf, stream, (b) => {
+        const last = lastLine(b);
+        if (!PROMPT_RE.test(last)) return false;
+        // 正常有回显：拿到「回显 + 输出 + 提示符」即可收工。
+        // 个别设备关了 echo，就多等 800ms，免得把上一条命令残留的提示符误判成本条结束。
+        return b.length > cmd.length + 2 || (Date.now() - started) > 800;
+      }, ms);
+      const raw = buf;
+      return { cmd: cmd, ok: ok, raw: raw, text: stripShell(raw, cmd), bytes: raw.length };
+    },
+    close() { try { stream.close(); } catch (e) { /* 忽略 */ } }
+  };
+}
+
+/** shell 路径：先判命令风格 → 关分页 → 取「速率 + ARP + MAC」三张表 */
+async function collectNetflowShell(server, timeoutMs, diag) {
+  const conn = await sshConnect(server, timeoutMs);
+  let sess;
+  try {
+    sess = await openSession(conn);
+  } catch (e) {
+    try { conn.end(); } catch (e2) { /* 忽略 */ }
+    throw new Error('__NO_SHELL__');
+  }
+  try {
+    await sess.waitReady(Math.min(timeoutMs, 15000));
+
+    // 判风格：display version 与 show version 互斥，谁有输出就是谁
+    let style = null;
+    for (const name of ['display', 'show']) {
+      const r = await sess.send(STYLES[name].version, Math.min(timeoutMs, 20000));
+      noteDiag(diag, r);
+      if (!looksUnsupported(r.text)) { style = name; break; }
+    }
+    if (!style) {
+      return { ok: false, error: '设备未识别命令风格（display version / show version 均无有效输出）' };
+    }
+    const set = STYLES[style];
+
+    // 关分页（结果本身无用，只为后续命令不被 More 卡住）
+    for (const p of set.paging) noteDiag(diag, await sess.send(p, 8000));
+
+    // 接口表最长，超时了也别丢已经收到的部分 —— 解析器能解多少算多少
+    const rIface = await sess.send(set.iface, Math.max(timeoutMs, 30000));
+    const rArp = await sess.send(set.arp, Math.min(timeoutMs, 20000));
+    const rMac = await sess.send(set.mac, Math.min(timeoutMs, 20000));
+    noteDiag(diag, rIface);
+    noteDiag(diag, rArp);
+    noteDiag(diag, rMac);
+
+    const ports = style === 'display' ? parseDisplayInterface(rIface.text) : parseShowInterfaces(rIface.text);
+    const arp = style === 'display' ? parseDisplayArp(rArp.text) : parseShowArp(rArp.text);
+    const mac = style === 'display' ? parseDisplayMac(rMac.text) : parseShowMac(rMac.text);
+    const rows = buildPortRows(ports, arp, mac);
+
+    if (!ports.length) {
+      // 采到了内容却一个端口都没解出来，把原文开头带上，便于对着设备核对格式
+      const head = String(rIface.text || '').replace(/\s+/g, ' ').slice(0, 160);
+      return {
+        ok: false,
+        style: style,
+        error: set.iface + ' 无有效端口输出（收到 ' + rIface.bytes + ' 字节'
+          + (rIface.ok ? '' : '，等待提示符超时') + '）：' + (head || '(空)')
+      };
+    }
+    return {
+      ok: true, style: style, vendor: set.vendor, via: 'shell',
+      rows: rows, ports: ports.length, arpCount: arp.length, macCount: mac.length,
+      truncated: !rIface.ok
+    };
+  } finally {
+    if (sess) sess.close();
+    try { conn.end(); } catch (e) { /* 忽略 */ }
+  }
+}
+
+/** exec 通道回退：个别设备反过来只放 exec，不支持交互式 shell */
+async function collectNetflowExec(server, timeoutMs) {
+  let conn = null;
+  try {
+    conn = await sshConnect(server, timeoutMs);
+    for (const name of ['display', 'show']) {
+      const set = STYLES[name];
+      const v = await sshExec(conn, set.iface, timeoutMs);
+      if (looksUnsupported(v.stdout)) continue;
+      const a = await sshExec(conn, set.arp, timeoutMs);
+      const m = await sshExec(conn, set.mac, timeoutMs);
+      const ports = name === 'display' ? parseDisplayInterface(v.stdout) : parseShowInterfaces(v.stdout);
+      const arp = name === 'display' ? parseDisplayArp(a.stdout) : parseShowArp(a.stdout);
+      const mac = name === 'display' ? parseDisplayMac(m.stdout) : parseShowMac(m.stdout);
+      const rows = buildPortRows(ports, arp, mac);
+      if (!ports.length) {
+        return {
+          ok: false, style: name,
+          error: set.iface + ' 在 exec 通道无有效端口输出（收到 ' + String(v.stdout || '').length + ' 字节）'
+        };
+      }
+      return {
+        ok: true, style: name, vendor: set.vendor, via: 'exec',
+        rows: rows, ports: ports.length, arpCount: arp.length, macCount: mac.length
+      };
+    }
+    return { ok: false, error: '未识别的命令行风格（display / show 均无有效输出）' };
+  } catch (e) {
+    return { ok: false, error: friendlyErr(e) };
+  } finally {
+    if (conn) { try { conn.end(); } catch (e) { /* 忽略 */ } }
+  }
 }
 
 /**
  * 采集一台交换机的端口流量。
  * @param {object} server  与巡检相同的设备结构 { host, port, auth: {...} }
  * @param {object} opts    { timeoutMs }
- * @returns {Promise<{ok, style?, rows?, ports?, arpCount?, macCount?, error?}>}
+ * @returns {Promise<{ok, style?, via?, rows?, ports?, arpCount?, macCount?, error?, diag?}>}
  */
 async function collectNetflow(server, opts) {
   const o = opts || {};
-  const timeoutMs = o.timeoutMs || 25000;
-  let conn = null;
-  try {
-    conn = await sshConnect(server, timeoutMs);
-    // 先判别命令风格：display 系不通就退回 show 系
-    const v1 = await sshExec(conn, STYLES.display.iface, timeoutMs);
-    let style = 'display';
-    if (looksUnsupported(v1.stdout)) {
-      const v2 = await sshExec(conn, STYLES.show.iface, timeoutMs);
-      if (looksUnsupported(v2.stdout)) {
-        return { ok: false, error: '未识别的命令行风格（display / show 均无有效输出）' };
-      }
-      style = 'show';
-    }
-    const set = STYLES[style];
-    const a = await sshExec(conn, set.arp, timeoutMs);
-    const m = await sshExec(conn, set.mac, timeoutMs);
-    const rawIface = style === 'display' ? v1.stdout : (await sshExec(conn, set.iface, timeoutMs)).stdout;
+  const timeoutMs = Math.max(5000, Number(o.timeoutMs) || 45000);
+  const diag = [];
 
-    const ports = style === 'display' ? parseDisplayInterface(rawIface) : parseShowInterfaces(rawIface);
-    const arp = style === 'display' ? parseDisplayArp(a.stdout) : parseShowArp(a.stdout);
-    const mac = style === 'display' ? parseDisplayMac(m.stdout) : parseShowMac(m.stdout);
-    const rows = buildPortRows(ports, arp, mac);
-    return { ok: true, style, rows, ports: ports.length, arpCount: arp.length, macCount: mac.length };
+  let shellErr = null;
+  try {
+    const r = await collectNetflowShell(server, timeoutMs, diag);
+    if (r.ok) { r.diag = diag; return r; }
+    shellErr = r.error || '未知原因';
   } catch (e) {
-    return { ok: false, error: (e && e.message) || String(e) };
-  } finally {
-    if (conn) { try { conn.end(); } catch (e) { /* 忽略 */ } }
+    const m = String((e && e.message) || e);
+    shellErr = m === '__NO_SHELL__' ? '设备不支持交互式 shell 通道' : friendlyErr(e);
   }
+
+  // 连接层面的错误（认证/超时/网络）换通道也救不回来，直接报出去，别让用户等两遍超时
+  if (/(认证失败|连接超时|连接被拒绝|网络不可达|无法解析|连接被对方重置|ECONN|ETIMEDOUT|EHOSTUNREACH|ENOTFOUND)/.test(shellErr)) {
+    return { ok: false, error: shellErr, via: 'shell', diag: diag };
+  }
+
+  const r2 = await collectNetflowExec(server, timeoutMs);
+  r2.diag = diag;
+  if (r2.ok) {
+    r2.note = 'shell 通道失败，已回退 exec 通道（shell 报错：' + shellErr + '）';
+    return r2;
+  }
+  r2.error = 'shell 通道：' + shellErr + '；exec 通道：' + (r2.error || '未知原因');
+  return r2;
 }
 
 module.exports = {

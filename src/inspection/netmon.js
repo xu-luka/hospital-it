@@ -53,6 +53,12 @@ async function pool(tasks, limit) {
   return out;
 }
 
+/** 把逐条命令的执行情况压成一行，便于在日志/页面里一眼看出是卡在哪条命令 */
+function fmtDiag(diag) {
+  if (!Array.isArray(diag) || !diag.length) return '';
+  return diag.map((x) => (x.cmd || '?') + '→' + (x.ok ? 'ok' : '超时') + '(' + (x.bytes || 0) + 'B)').join('  ');
+}
+
 /**
  * 跑一轮流量采集。
  * @param {object} opt { force, deviceId, timeoutMs }
@@ -65,7 +71,8 @@ async function runOnce(opt) {
     return { ok: false, skipped: true, reason: '流量采集已关闭' };
   }
   state.running = true;
-  const timeoutMs = Math.max(5000, Number(o.timeoutMs) || 30000);
+  // 单台 45 秒：display interface 在 48 口交换机上输出上百 KB，给慢了会被超时截断
+  const timeoutMs = Math.max(5000, Number(o.timeoutMs) || 45000);
   const at = store.now();
   const summary = {
     at: at, devices: 0, ok: 0, failed: 0, ports: 0,
@@ -100,7 +107,12 @@ async function runOnce(opt) {
       const host = (s && s.host) || '';
       if (!r.ok) {
         summary.failed++;
-        summary.perDevice.push({ deviceId: deviceId, name: deviceName, host: host, ok: false, error: r.error });
+        summary.perDevice.push({
+          deviceId: deviceId, name: deviceName, host: host, ok: false,
+          error: r.error || '未知原因',
+          via: r.via || '',
+          diag: fmtDiag(r.diag)
+        });
         continue;
       }
       summary.ok++;
@@ -121,9 +133,23 @@ async function runOnce(opt) {
       }
       summary.perDevice.push({
         deviceId: deviceId, name: deviceName, host: host, ok: true,
-        style: r.style, ports: r.rows.length, saved: w.saved || 0,
-        arp: r.arpCount, mac: r.macCount
+        style: r.style, via: r.via || '', ports: r.rows.length, saved: w.saved || 0,
+        arp: r.arpCount, mac: r.macCount,
+        // 输出被超时截断的，端口数会偏少，标出来免得当成设备只挂了这几个口
+        truncated: !!r.truncated,
+        note: r.note || ''
       });
+    }
+
+    // 失败明细必须落到日志里：控制台上这一行往往是管理员唯一的线索，
+    // 只报「0/8 台」等于什么都没说。
+    if (summary.failed) {
+      console.warn('>>> [流量] ' + summary.failed + '/' + summary.devices + ' 台交换机采集失败：');
+      for (const d of summary.perDevice) {
+        if (d.ok) continue;
+        console.warn('      · ' + ((d.name || '未命名') + ' (' + d.host + ')：') + d.error
+          + (d.diag ? '\n        命令明细：' + d.diag : ''));
+      }
     }
 
     // 只在真的判定出突发时写日志 —— 正常轮次不写，否则操作日志会被 5 分钟一条的记录淹没
@@ -139,11 +165,15 @@ async function runOnce(opt) {
 
     state.roundNo++;
     state.lastRunAt = at;
-    state.lastError = null;
+    // 一台都没采到时把第一条真实原因顶到页面上，别让页面只显示「0/8 台」这种无从下手的数字
+    state.lastError = (summary.ok === 0 && summary.failed > 0)
+      ? ('全部 ' + summary.failed + ' 台交换机采集失败：' + ((summary.perDevice[0] && summary.perDevice[0].error) || '未知原因'))
+      : null;
     state.lastSummary = summary;
     console.log('>>> [流量] 第 ' + state.roundNo + ' 轮完成：' + summary.ok + '/' + summary.devices
       + ' 台交换机，' + summary.ports + ' 个端口，入库 ' + summary.saved
-      + ' 条，告警 ' + summary.alerts + ' 条');
+      + ' 条，告警 ' + summary.alerts + ' 条'
+      + (summary.failed ? '，失败 ' + summary.failed + ' 台（原因见上方明细）' : ''));
     return { ok: true, summary: summary };
   } catch (e) {
     state.lastError = String((e && e.message) || e);
