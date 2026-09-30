@@ -39,16 +39,51 @@ const OS_LABELS = (deviceRepo && deviceRepo.OS_LABELS) || {};
 
 router.get('/netflow/devices', authRequired, (req, res) => {
   try {
+    const excluded = new Set(store.getExcludes());
     const rows = deviceRepo.listRows({ enabledOnly: true })
       .filter((r) => r.os === 'switch')
       .map((r) => ({
         id: r.id, name: r.name, host: r.host,
         osLabel: OS_LABELS[r.os] || r.os,
-        location: r.location || '', remark: r.remark || ''
+        location: r.location || '', remark: r.remark || '',
+        enabled: !excluded.has(Number(r.id))
       }));
-    res.json({ code: 0, data: { items: rows } });
+    res.json({ code: 0, data: { items: rows, excludes: Array.from(excluded) } });
   } catch (e) {
     res.json({ code: 500, message: '读取交换机列表失败：' + ((e && e.message) || e), data: { items: [] } });
+  }
+});
+
+/* ---------------- 采集范围（哪几台交换机要采流量） ----------------
+ *
+ * 有些设备为了走 SSH 巡检被登记成了交换机（防火墙、路由器常见），
+ * 但它们没有「端口 + ARP + MAC 表」，按端口采流量这条路本来就不通，
+ * 每 5 分钟试一次只会永远失败、把真正的故障淹掉。这里给管理员一个开关：
+ * 巡检照旧，只是不再请求流量。
+ */
+
+router.get('/netflow/excludes', authRequired, (req, res) => {
+  res.json({ code: 0, data: { ids: store.getExcludes() } });
+});
+
+router.put('/netflow/excludes', authRequired, (req, res) => {
+  if (!isAdmin(req.user)) return res.json({ code: 403, message: '仅管理员可修改采集范围' });
+  const body = (req.body && typeof req.body === 'object') ? req.body : {};
+  const raw = Array.isArray(body.ids) ? body.ids
+    : (Array.isArray(body.excludes) ? body.excludes : null);
+  if (!raw) return res.json({ code: 400, message: '参数格式应为 { ids: [设备id...] }' });
+  try {
+    const r = store.setExcludes(raw);
+    if (!r.ok) return res.json({ code: 500, message: '保存失败：' + (r.reason || '未知原因') });
+    logAction(req.user, '修改流量采集范围', {
+      id: null, name: '网络流量监控',
+      detail: '参与采集的设备之外，排除 ' + r.excludes.length + ' 台：'
+        + (r.excludes.length ? r.excludes.join(', ') : '（无）'),
+      host: ''
+    });
+    res.json({ code: 0, data: { ids: r.excludes } });
+  } catch (e) {
+    res.json({ code: 500, message: '保存采集范围失败：' + ((e && e.message) || e) });
   }
 });
 

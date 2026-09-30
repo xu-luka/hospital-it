@@ -48,24 +48,50 @@
         <div v-else-if="!devices.length" class="net-tip">
           还没有可采集的交换机。请到「机房巡检 → 设备台账」添加类型为「网络交换机」的设备并启用。
         </div>
-        <div v-if="perDevice.length" class="net-diag">
+        <div class="net-diag">
           <span class="net-diag-toggle" @click="showDiag=!showDiag">
             本轮采集明细：成功 {{ okCount }} 台 · 失败 {{ failCount }} 台
+            <template v-if="skipCount"> · 跳过 {{ skipCount }} 台</template>
             <b>{{ showDiag ? '▲ 收起' : '▼ 展开看原因' }}</b>
           </span>
           <ul v-show="showDiag || failAll" class="net-diag-list">
             <li v-for="d in perDevice" :key="d.deviceId">
-              <span class="dev-badge" :class="d.ok ? 'ok' : 'err'">{{ d.ok ? '成功' : '失败' }}</span>
+              <span v-if="d.skipped" class="dev-badge muted">跳过</span>
+              <span v-else class="dev-badge" :class="d.ok ? 'ok' : 'err'">{{ d.ok ? '成功' : '失败' }}</span>
               <span class="mono">{{ d.host }}</span>
               <span class="net-diag-name">{{ d.name }}</span>
-              <span v-if="d.ok" class="cell-sub">
+              <span v-if="d.skipped" class="cell-sub">已设为不参与流量采集（巡检不受影响）</span>
+              <span v-else-if="d.ok" class="cell-sub">
                 {{ d.via === 'exec' ? 'exec 通道' : 'shell 通道' }} · {{ d.style }} · {{ d.ports }} 个端口 · ARP {{ d.arp }} / MAC {{ d.mac }}
                 <template v-if="d.truncated">· 输出被截断</template>
               </span>
               <span v-else class="cell-sub err-text">{{ d.error }}</span>
-              <div v-if="!d.ok && d.diag" class="net-diag-cmds">命令明细：{{ d.diag }}</div>
+              <div v-if="!d.ok && !d.skipped && d.diag" class="net-diag-cmds">命令明细：{{ d.diag }}</div>
             </li>
           </ul>
+        </div>
+
+        <!-- 采集范围：防火墙/网关常被登记成交换机以便 SSH 巡检，但它们没有端口级流量可采 -->
+        <div class="net-diag" style="margin-top:6px">
+          <span class="net-diag-toggle" @click="showScope=!showScope">
+            采集范围：{{ enabledCount }} 台参与采集<template v-if="skipTotal"> · {{ skipTotal }} 台不参与</template>
+            <b>{{ showScope ? '▲ 收起' : '▼ 勾选 / 取消' }}</b>
+          </span>
+          <ul v-show="showScope" class="net-diag-list net-scope">
+            <li v-if="!devices.length" class="cell-sub">台账里没有「网络交换机」类型的设备。</li>
+            <li v-for="d in devices" :key="'sc-'+d.id">
+              <label class="ck">
+                <input type="checkbox" :checked="d.enabled" :disabled="savingScope" @change="toggleScope(d, $event)">
+              </label>
+              <span class="mono">{{ d.host }}</span>
+              <span class="net-diag-name">{{ d.name }}</span>
+              <span class="cell-sub">{{ d.enabled ? '参与采集' : '不参与（仍会巡检）' }}</span>
+            </li>
+          </ul>
+          <div v-show="showScope" class="net-tip">
+            被登记为「网络交换机」但其实是防火墙、路由器或专用网关的设备，拿不到端口级流量，
+            每轮都会报失败。取消勾选后巡检照旧，只是不再请求流量。
+          </div>
         </div>
       </div>
 
@@ -342,6 +368,8 @@
         series: null,
         cfgForm: null,
         showDiag: false,
+        showScope: false,
+        savingScope: false,
         CW: 680, CH: 180, PL: 8, PR: 8
       };
     },
@@ -361,7 +389,12 @@
         return (s && s.perDevice) || [];
       },
       okCount() { return this.perDevice.filter((d) => d.ok).length; },
-      failCount() { return this.perDevice.filter((d) => !d.ok).length; },
+      failCount() { return this.perDevice.filter((d) => !d.ok && !d.skipped).length; },
+      /** 本轮按管理员设置主动跳过的台数（不算故障） */
+      skipCount() { return this.perDevice.filter((d) => d.skipped).length; },
+      /** 台账里被设为「不参与采集」的总数 */
+      skipTotal() { return this.devices.filter((d) => !d.enabled).length; },
+      enabledCount() { return this.devices.filter((d) => d.enabled).length; },
       /** 全军覆没时默认展开明细 —— 这时候用户最需要的就是原因 */
       failAll() { return this.perDevice.length > 0 && this.okCount === 0; },
       minutesLabel() {
@@ -404,6 +437,28 @@
           const r = await api.get('/api/inspection/netflow/devices');
           this.devices = r.items || [];
         } catch (e) { this.devices = []; }
+      },
+
+      /** 勾选即「参与采集」；一台一台改，改完立刻落盘，点错的代价最小 */
+      async toggleScope(d, ev) {
+        const want = !!ev.target.checked;
+        const id = Number(d.id);
+        const ids = this.devices.filter((x) => Number(x.id) !== id && !x.enabled)
+          .map((x) => Number(x.id));
+        if (!want) ids.push(id);
+        this.savingScope = true;
+        // 先按预期切过来，失败再还原 —— 等服务端回来再勾选会有明显的延迟感
+        const before = this.devices.map((x) => x.enabled);
+        this.devices = this.devices.map((x) => (Number(x.id) === id ? Object.assign({}, x, { enabled: want }) : x));
+        try {
+          await api.put('/api/inspection/netflow/excludes', { ids: ids });
+          await this.loadDevices();
+        } catch (e) {
+          this.devices = this.devices.map((x, i) => Object.assign({}, x, { enabled: before[i] }));
+          this.$toast(e.message || '保存失败', 'err');
+        } finally {
+          this.savingScope = false;
+        }
       },
 
       async load() {

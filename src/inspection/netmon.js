@@ -75,7 +75,7 @@ async function runOnce(opt) {
   const timeoutMs = Math.max(5000, Number(o.timeoutMs) || 45000);
   const at = store.now();
   const summary = {
-    at: at, devices: 0, ok: 0, failed: 0, ports: 0,
+    at: at, devices: 0, ok: 0, failed: 0, skipped: 0, ports: 0,
     saved: 0, alerts: 0, cooled: 0, perDevice: []
   };
   try {
@@ -85,9 +85,31 @@ async function runOnce(opt) {
       const id = Number(o.deviceId);
       servers = servers.filter((s) => Number(s._device_id) === id);
     }
+
+    // 「能不能 SSH 上去巡检」和「要不要采端口流量」是两件事：
+    // 防火墙/网关为了走 SSH 巡检常常被登记成交换机，但它们压根没有端口级流量可看。
+    // 手动采集某一台时不看这个名单 —— 用户点名要试，就让它试。
+    const excluded = new Set(store.getExcludes());
+    const skipped = [];
+    if (!o.deviceId && excluded.size) {
+      servers = servers.filter((s) => {
+        const id = Number(s && s._device_id) || 0;
+        if (!excluded.has(id)) return true;
+        skipped.push({
+          deviceId: id, name: (s && s.name) || '', host: (s && s.host) || '',
+          ok: false, skipped: true, error: '已设为不参与流量采集（巡检不受影响）'
+        });
+        return false;
+      });
+    }
+    summary.skipped = skipped.length;
+    summary.perDevice = skipped;
+
     summary.devices = servers.length;
     if (!servers.length) {
-      state.lastError = '台账中没有可采集的交换机（需在设备台账里添加类型为「网络交换机」的设备并启用）';
+      state.lastError = skipped.length
+        ? '所有交换机都被设为不参与流量采集了（可在「采集范围」里重新勾选）'
+        : '台账中没有可采集的交换机（需在设备台账里添加类型为「网络交换机」的设备并启用）';
       state.lastSummary = summary;
       state.lastRunAt = at;
       return { ok: true, skipped: true, reason: state.lastError, summary: summary };
@@ -146,7 +168,7 @@ async function runOnce(opt) {
     if (summary.failed) {
       console.warn('>>> [流量] ' + summary.failed + '/' + summary.devices + ' 台交换机采集失败：');
       for (const d of summary.perDevice) {
-        if (d.ok) continue;
+        if (d.ok || d.skipped) continue;   // 「不参与采集」是管理员的选择，不算故障，别混进来吓人
         console.warn('      · ' + ((d.name || '未命名') + ' (' + d.host + ')：') + d.error
           + (d.diag ? '\n        命令明细：' + d.diag : ''));
       }
@@ -173,6 +195,7 @@ async function runOnce(opt) {
     console.log('>>> [流量] 第 ' + state.roundNo + ' 轮完成：' + summary.ok + '/' + summary.devices
       + ' 台交换机，' + summary.ports + ' 个端口，入库 ' + summary.saved
       + ' 条，告警 ' + summary.alerts + ' 条'
+      + (summary.skipped ? '，跳过 ' + summary.skipped + ' 台（不参与采集）' : '')
       + (summary.failed ? '，失败 ' + summary.failed + ' 台（原因见上方明细）' : ''));
     return { ok: true, summary: summary };
   } catch (e) {

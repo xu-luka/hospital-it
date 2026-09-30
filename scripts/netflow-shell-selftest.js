@@ -135,6 +135,17 @@ const SHOW_MAC = [
 const NO_SUCH_CMD = "Error: Unrecognized command found at '^' position.";
 const CISCO_BAD = "% Invalid input detected at '^' marker.";
 
+/* 防火墙/网关类设备：确实能 SSH 登录、也真有 show 命令，但没有交换机那套数据。
+ * 这是 2026-09-30 某台「360 防火墙」被登记成网络交换机后的真实输出形态：
+ *   show version 有回（很短），show interfaces 直接 "% Invalid parameter detected"。
+ * 以前只会把设备原话原样甩给用户，看的人不知道该怎么办。 */
+const FW_VERSION = [
+  '360 Firewall Platform',
+  'Version 3.2.1 (build 20240118)',
+  'Serial: FW-A1B2C3-0007'
+].join('\n');
+const FW_INVALID = "% Invalid parameter detected at '^' marker.";
+
 /* ---------------- 断言 ---------------- */
 
 let pass = 0;
@@ -272,8 +283,67 @@ async function case6NoPorts() {
 
   const r = await netflow.collectNetflow({ host: '10.0.0.6' }, { timeoutMs: 5000 });
   eq('采集失败', r.ok, false);
-  ok('错误说明是端口输出无效', /无有效端口输出/.test(r.error), r.error);
-  ok('错误里带上了设备原文片段', /Interface statistics/.test(r.error));
+  // 文案是新的，考点是「说清试过哪些命令 + 保留原话」，便于对着设备核对格式
+  ok('错误说明有返回但解不出端口', /没能解析出端口速率/.test(r.error), r.error);
+  ok('错误里保留了设备原文片段', /Interface statistics/.test(r.error));
+  ok('错误里列出了试过的命令', /display interface/.test(r.error), r.error);
+}
+
+/**
+ * 用例 7：防火墙/网关类设备 —— 认 show 系，但 show interfaces 被拒。
+ *
+ * 期望的不是「又一条技术报错」，而是：①认得出这是设备不支持、②告诉人下一步做什么、
+ * ③不要再浪费一次 exec 握手（命令行得了 cousins，换通道也是同样结果）。
+ */
+async function case7UnsupportedDevice() {
+  console.log('\n== 用例 7：防火墙类设备（命令不支持）→ 说清原因且不再试 exec ==');
+  let execCalls = 0;
+  const cmds = [];
+  connectImpl = async () => makeConn(() => makeStream((cmd) => {
+    cmds.push(cmd);
+    if (cmd === 'display version') return NO_SUCH_CMD;
+    if (cmd === 'show version') return FW_VERSION;
+    if (cmd === 'terminal length 0') return '';
+    if (cmd === 'show interfaces') return FW_INVALID;
+    if (cmd === 'show interface') return FW_INVALID;
+    return FW_INVALID;
+  }));
+  execImpl = async () => { execCalls++; return { stdout: FW_INVALID, stderr: '', code: 0 }; };
+
+  const r = await netflow.collectNetflow({ host: '10.0.0.7' }, { timeoutMs: 5000 });
+  eq('采集失败', r.ok, false);
+  eq('归类为设备不支持', r.reason, 'unsupported');
+  ok('点明这类设备通常不是交换机', /防火墙|路由器|专用网关/.test(r.error), r.error);
+  ok('告诉管理员下一步去哪处理', /采集范围/.test(r.error));
+  ok('没再把 show interfaces 的原话丢掉', /Invalid parameter/.test(r.error));
+  eq('未多此一举再试 exec', execCalls, 0);
+  // 端口都没拿到时不该再去拉 ARP / MAC —— 失败轮次要快收尸
+  ok('未浪费往返去取 ARP', cmds.indexOf('show arp') < 0, cmds.join(' | '));
+  ok('未浪费往返去取 MAC', cmds.indexOf('show mac address-table') < 0);
+}
+
+/** 用例 8：设备只有单数的 show interface —— 主命令失败后必须自动试变体 */
+async function case8IfaceVariant() {
+  console.log('\n== 用例 8：只有 show interface（无复数）→ 用命令变体救回来 ==');
+  connectImpl = async () => makeConn(() => makeStream((cmd) => {
+    if (cmd === 'display version') return NO_SUCH_CMD;
+    if (cmd === 'show version') return CISCO_VERSION;
+    if (cmd === 'terminal length 0') return '';
+    if (cmd === 'show interfaces') return CISCO_BAD;   // 这台设备不认复数
+    if (cmd === 'show interface') return SHOW_IFACE;   // 只认单数
+    if (cmd === 'show arp') return SHOW_ARP;
+    if (cmd === 'show mac address-table') return SHOW_MAC;
+    return '';
+  }));
+  execImpl = async () => ({ stdout: '', stderr: '', code: 0 });
+
+  const r = await netflow.collectNetflow({ host: '10.0.0.8' }, { timeoutMs: 5000 });
+  eq('采集成功', r.ok, true);
+  eq('走 shell 通道', r.via, 'shell');
+  eq('最终用上的命令', r.ifaceCmd, 'show interface');
+  eq('端口数', r.ports, 2);
+  eq('ARP 行', r.arpCount, 1);
+  eq('MAC 行', r.macCount, 1);
 }
 
 /* ---------------- 入口 ---------------- */
@@ -287,6 +357,8 @@ async function case6NoPorts() {
     await case4AllFail();
     await case5AuthFailFast();
     await case6NoPorts();
+    await case7UnsupportedDevice();
+    await case8IfaceVariant();
   } catch (e) {
     fail++;
     console.log('\n[FAIL] 用例抛异常：' + ((e && e.stack) || e));

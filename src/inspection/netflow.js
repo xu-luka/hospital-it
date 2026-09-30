@@ -314,6 +314,9 @@ const STYLES = {
     // 不关分页会被 ---- More ---- 卡住，只回前 50 行，后面的端口全丢。
     paging: ['screen-length temporary 0', 'screen-length disable'],
     iface: 'display interface',
+    // 同一套 CLI 里「单数/复数」写法不通用：有的设备只认 display interfaces。
+    // 主命令解不出端口时按这里逐个再试一次，成本只是一条命令的往返。
+    ifaceAlts: ['display interfaces'],
     arp: 'display arp',
     mac: 'display mac-address'
   },
@@ -322,6 +325,9 @@ const STYLES = {
     version: 'show version',
     paging: ['terminal length 0'],
     iface: 'show interfaces',
+    // 反之亦然：不少设备（以及基于 Linux CLI 封装的防火墙/网关）只有 show interface，
+    // show interfaces 会直接回 "% Invalid parameter detected at '^' marker."
+    ifaceAlts: ['show interface'],
     arp: 'show arp',
     mac: 'show mac address-table'
   }
@@ -460,6 +466,60 @@ async function openSession(conn) {
   };
 }
 
+/**
+ * 把「为什么没采到端口」翻译成管理员看得懂的结论。
+ *
+ * 直接把设备的原始报错甩出去是不够的：`show interfaces 无有效端口输出（收到 81 字节）：
+ * % Invalid parameter detected at '^' marker.` 这种字串，使用者看完只会问「然后呢」。
+ * 真正要回答的是「这台设备是不是根本不该来采」——所以这里按原因分类，
+ * 并明确告诉下一步该做什么（多半是到采集范围里把它摘掉）。
+ */
+function classifyFailure(attempts, styleOrder) {
+  const list = (attempts || []).filter(Boolean);
+  const cmds = list.map((a) => a.cmd);
+  const shown = cmds.slice(0, 3).join(' / ') + (cmds.length > 3 ? ' 等 ' + cmds.length + ' 条' : '');
+  // 取证要挑「返回内容最多」的那次：最后试的那个命令往往是设备不认、回了个空，
+  // 拿它当证据反而把真正有用的设备原文抹掉了。
+  let ev = null;
+  for (const a of list) {
+    const n = (a.r && a.r.bytes) || 0;
+    if (!ev || n > ((ev.r && ev.r.bytes) || 0)) ev = a;
+  }
+  const anyTimeout = list.some((a) => a.r && !a.r.ok);
+  const anyRejected = list.some((a) => BAD_OUTPUT_RE.test(String((a.r && a.r.text) || '').slice(0, 200)));
+  const anyOutput = list.some((a) => a.r && a.r.bytes > 40);
+  const head = String((ev && ev.r && ev.r.text) || '').replace(/\s+/g, ' ').slice(0, 160);
+
+  if (anyRejected) {
+    return {
+      reason: 'unsupported',
+      error: '设备不接受端口流量命令（试过 ' + (shown || (styleOrder || []).join(' / ')) + '）—— '
+        + '这通常不是交换机，而是防火墙/路由器/专用网关：它们没有「端口 + ARP + MAC 表」这套数据，'
+        + '按端口查流量这条路本来就不通。确认它不需要看端口流量的话，'
+        + '到「采集范围」里取消勾选即可，巡检不受影响。'
+        + (head ? ' 设备原话：' + head : '')
+    };
+  }
+  if (anyTimeout) {
+    return {
+      reason: 'timeout',
+      error: '命令已发出但等待返回超时（试过 ' + (shown || '') + '）。可能是输出太长或设备响应慢。'
+        + (head ? ' 设备最后返回：' + head : '')
+    };
+  }
+  if (!anyOutput) {
+    return {
+      reason: 'no_output',
+      error: '命令无任何返回（试过 ' + (shown || '') + '）。多半是登录后没进到能执行命令的视图，'
+        + '或该账号权限不足。' + (head ? ' 收到：' + head : '')
+    };
+  }
+  return {
+    reason: 'unparsed',
+    error: '设备有返回但没能解析出端口速率（试过 ' + (shown || '') + '）：' + (head || '(空)')
+  };
+}
+
 /** shell 路径：先判命令风格 → 关分页 → 取「速率 + ARP + MAC」三张表 */
 async function collectNetflowShell(server, timeoutMs, diag) {
   const conn = await sshConnect(server, timeoutMs);
@@ -473,53 +533,81 @@ async function collectNetflowShell(server, timeoutMs, diag) {
   try {
     await sess.waitReady(Math.min(timeoutMs, 15000));
 
-    // 判风格：display version 与 show version 互斥，谁有输出就是谁
+    // 判风格：display version 与 show version 互斥，谁有输出就是谁。
+    // rejected 里记下已经明确不认的风格 —— 后面兜底时不必再试它。
     let style = null;
+    const rejected = [];
     for (const name of ['display', 'show']) {
       const r = await sess.send(STYLES[name].version, Math.min(timeoutMs, 20000));
       noteDiag(diag, r);
       if (!looksUnsupported(r.text)) { style = name; break; }
+      rejected.push(name);
     }
     if (!style) {
-      return { ok: false, error: '设备未识别命令风格（display version / show version 均无有效输出）' };
-    }
-    const set = STYLES[style];
-
-    // 关分页（结果本身无用，只为后续命令不被 More 卡住）
-    for (const p of set.paging) noteDiag(diag, await sess.send(p, 8000));
-
-    // 接口表最长，超时了也别丢已经收到的部分 —— 解析器能解多少算多少
-    const rIface = await sess.send(set.iface, Math.max(timeoutMs, 30000));
-    const rArp = await sess.send(set.arp, Math.min(timeoutMs, 20000));
-    const rMac = await sess.send(set.mac, Math.min(timeoutMs, 20000));
-    noteDiag(diag, rIface);
-    noteDiag(diag, rArp);
-    noteDiag(diag, rMac);
-
-    const ports = style === 'display' ? parseDisplayInterface(rIface.text) : parseShowInterfaces(rIface.text);
-    const arp = style === 'display' ? parseDisplayArp(rArp.text) : parseShowArp(rArp.text);
-    const mac = style === 'display' ? parseDisplayMac(rMac.text) : parseShowMac(rMac.text);
-    const rows = buildPortRows(ports, arp, mac);
-
-    if (!ports.length) {
-      // 采到了内容却一个端口都没解出来，把原文开头带上，便于对着设备核对格式
-      const head = String(rIface.text || '').replace(/\s+/g, ' ').slice(0, 160);
       return {
-        ok: false,
-        style: style,
-        error: set.iface + ' 无有效端口输出（收到 ' + rIface.bytes + ' 字节'
-          + (rIface.ok ? '' : '，等待提示符超时') + '）：' + (head || '(空)')
+        ok: false, shellUnusable: true,
+        error: '设备未识别命令风格（display version / show version 均无有效输出）'
       };
     }
+
+    let attempts = [];
+    let hit = null;
+    for (const name of [style].concat(['display', 'show'].filter((n) => n !== style && !rejected.includes(n)))) {
+      const r = await tryStyle(sess, name, timeoutMs, diag);
+      if (r.ports.length) { hit = r; break; }
+      attempts = attempts.concat(r.attempts || []);
+    }
+
+    if (!hit) {
+      const c = classifyFailure(attempts, [style]);
+      return { ok: false, style: style, reason: c.reason, error: c.error };
+    }
+
+    // 端口拿到了才去拉 ARP / MAC —— 失败时省掉这两趟往返，八台设备的轮次能快不少
+    const arp = hit.style === 'display' ? parseDisplayArp(hit.arpRes.text) : parseShowArp(hit.arpRes.text);
+    const mac = hit.style === 'display' ? parseDisplayMac(hit.macRes.text) : parseShowMac(hit.macRes.text);
+    const rows = buildPortRows(hit.ports, arp, mac);
     return {
-      ok: true, style: style, vendor: set.vendor, via: 'shell',
-      rows: rows, ports: ports.length, arpCount: arp.length, macCount: mac.length,
-      truncated: !rIface.ok
+      ok: true, style: hit.style, vendor: STYLES[hit.style].vendor, via: 'shell',
+      ifaceCmd: hit.cmd,
+      rows: rows, ports: hit.ports.length, arpCount: arp.length, macCount: mac.length,
+      truncated: !hit.res.ok
     };
   } finally {
     if (sess) sess.close();
     try { conn.end(); } catch (e) { /* 忽略 */ }
   }
+}
+
+/**
+ * 用某一种命令风格完整试一遍：关分页 → 逐个试接口命令变体 → （有端口才）取 ARP / MAC。
+ * @returns {{style, ports, arpRes?, macRes?, cmd?, res?, lastAttempt?}}
+ */
+async function tryStyle(sess, styleName, timeoutMs, diag) {
+  const set = STYLES[styleName];
+  const parseIface = styleName === 'display' ? parseDisplayInterface : parseShowInterfaces;
+
+  // 关分页（结果本身无用，只为后续命令不被 More 卡住）
+  for (const p of set.paging) noteDiag(diag, await sess.send(p, 8000));
+
+  const cmds = [set.iface].concat(set.ifaceAlts || []);
+  const attempts = [];
+  for (const cmd of cmds) {
+    // 接口表最长，超时了也别丢已经收到的部分 —— 解析器能解多少算多少
+    const r = await sess.send(cmd, Math.max(timeoutMs, 30000));
+    noteDiag(diag, r);
+    attempts.push({ cmd: cmd, r: r });
+    const ports = parseIface(r.text);
+    if (ports.length) {
+      // 端口拿到了才继续拉另外两张表
+      const rArp = await sess.send(set.arp, Math.min(timeoutMs, 20000));
+      const rMac = await sess.send(set.mac, Math.min(timeoutMs, 20000));
+      noteDiag(diag, rArp);
+      noteDiag(diag, rMac);
+      return { style: styleName, ports: ports, cmd: cmd, res: r, arpRes: rArp, macRes: rMac, attempts: attempts };
+    }
+  }
+  return { style: styleName, ports: [], attempts: attempts };
 }
 
 /** exec 通道回退：个别设备反过来只放 exec，不支持交互式 shell */
@@ -529,26 +617,23 @@ async function collectNetflowExec(server, timeoutMs) {
     conn = await sshConnect(server, timeoutMs);
     for (const name of ['display', 'show']) {
       const set = STYLES[name];
-      const v = await sshExec(conn, set.iface, timeoutMs);
-      if (looksUnsupported(v.stdout)) continue;
-      const a = await sshExec(conn, set.arp, timeoutMs);
-      const m = await sshExec(conn, set.mac, timeoutMs);
-      const ports = name === 'display' ? parseDisplayInterface(v.stdout) : parseShowInterfaces(v.stdout);
-      const arp = name === 'display' ? parseDisplayArp(a.stdout) : parseShowArp(a.stdout);
-      const mac = name === 'display' ? parseDisplayMac(m.stdout) : parseShowMac(m.stdout);
-      const rows = buildPortRows(ports, arp, mac);
-      if (!ports.length) {
+      // 与主路径一致：先主命令，解不出端口再试变体
+      for (const cmd of [set.iface].concat(set.ifaceAlts || [])) {
+        const v = await sshExec(conn, cmd, timeoutMs);
+        const ports = name === 'display' ? parseDisplayInterface(v.stdout) : parseShowInterfaces(v.stdout);
+        if (!ports.length) continue;
+        const a = await sshExec(conn, set.arp, timeoutMs);
+        const m = await sshExec(conn, set.mac, timeoutMs);
+        const arp = name === 'display' ? parseDisplayArp(a.stdout) : parseShowArp(a.stdout);
+        const mac = name === 'display' ? parseDisplayMac(m.stdout) : parseShowMac(m.stdout);
+        const rows = buildPortRows(ports, arp, mac);
         return {
-          ok: false, style: name,
-          error: set.iface + ' 在 exec 通道无有效端口输出（收到 ' + String(v.stdout || '').length + ' 字节）'
+          ok: true, style: name, vendor: set.vendor, via: 'exec', ifaceCmd: cmd,
+          rows: rows, ports: ports.length, arpCount: arp.length, macCount: mac.length
         };
       }
-      return {
-        ok: true, style: name, vendor: set.vendor, via: 'exec',
-        rows: rows, ports: ports.length, arpCount: arp.length, macCount: mac.length
-      };
     }
-    return { ok: false, error: '未识别的命令行风格（display / show 均无有效输出）' };
+    return { ok: false, reason: 'unsupported', error: '未识别的命令行风格（display / show 均无有效输出）' };
   } catch (e) {
     return { ok: false, error: friendlyErr(e) };
   } finally {
@@ -568,9 +653,11 @@ async function collectNetflow(server, opts) {
   const diag = [];
 
   let shellErr = null;
+  let shellResult = null;
   try {
     const r = await collectNetflowShell(server, timeoutMs, diag);
     if (r.ok) { r.diag = diag; return r; }
+    shellResult = r;
     shellErr = r.error || '未知原因';
   } catch (e) {
     const m = String((e && e.message) || e);
@@ -580,6 +667,14 @@ async function collectNetflow(server, opts) {
   // 连接层面的错误（认证/超时/网络）换通道也救不回来，直接报出去，别让用户等两遍超时
   if (/(认证失败|连接超时|连接被拒绝|网络不可达|无法解析|连接被对方重置|ECONN|ETIMEDOUT|EHOSTUNREACH|ENOTFOUND)/.test(shellErr)) {
     return { ok: false, error: shellErr, via: 'shell', diag: diag };
+  }
+
+  // 会话已经建起来、命令风格也认出来了，只是设备本身不提供端口数据 ——
+  // 这时再去 exec 跑同一批命令只会得到同样的结果，白白多一次 SSH 握手、
+  // 多一倍失败等待。只有「会话/风格都搭不起来」才值得换通道再试一次。
+  if (shellResult && shellResult.reason) {
+    return { ok: false, via: 'shell', diag: diag, style: shellResult.style,
+      reason: shellResult.reason, error: shellErr };
   }
 
   const r2 = await collectNetflowExec(server, timeoutMs);

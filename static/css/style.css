@@ -970,6 +970,9 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .net-diag-list .err-text { color: #b91c1c; display: block; }
 /* 报错里混着设备原文，等宽字体 + 允许断行，否则长英文串会把弹层撑出横向滚动 */
 .net-diag-cmds { color: var(--gray); font-family: Consolas, Monaco, monospace; font-size: 12px; margin-top: 2px; word-break: break-all; }
+/* 采集范围：每行的复选框要复位成原生尺寸 —— 全局 input 样式会把勾框拉宽、和后面的 IP 挤在一起 */
+.net-scope .ck { margin-right: 8px; vertical-align: middle; }
+.net-scope .ck input { min-width: 0; width: 14px; height: 14px; padding: 0; margin: 0; border: none; background: none; }
 /* 占用条：相对本页峰值的视觉参考，不做精确标尺 */
 .net-bar { height: 8px; background: #eef2f7; border-radius: 4px; overflow: hidden; }
 .net-bar i { display: block; height: 100%; background: var(--primary); border-radius: 4px; }

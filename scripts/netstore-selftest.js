@@ -198,6 +198,27 @@ ok('有最新时间戳', !!lt.at, lt.at);
 ok('最新快照有行', lt.rows.length >= 1, lt.rows.length + ' 行');
 ok('行内带可读速率', lt.rows[0] && !!lt.rows[0].totalText, lt.rows[0] && lt.rows[0].totalText);
 
+console.log('\n== 采集范围（把防火墙类设备排除在流量采集之外） ==');
+// 这类设备在台账里被登记成交换机以便 SSH 巡检，但拿不到端口级流量，
+// 每轮都失败会把真正的故障淹掉。开关存在流量自己的配置表里，不动台账结构。
+ok('初始名单为空', ns.getExcludes().length === 0, JSON.stringify(ns.getExcludes()));
+ok('设置后可读回', (function () {
+  const r = ns.setExcludes([9901, 9902]);
+  return r.ok && JSON.stringify(r.excludes) === '[9901,9902]';
+})(), JSON.stringify(ns.getExcludes()));
+ok('重复 id 去重', JSON.stringify(ns.setExcludes([9901, 9901, 9902]).excludes) === '[9901,9902]');
+ok('脏数据被过滤', JSON.stringify(ns.setExcludes([9901, 'abc', 0, -3, null, 9903]).excludes) === '[9901,9903]',
+  JSON.stringify(ns.getExcludes()));
+ok('支持字符串数字', JSON.stringify(ns.setExcludes(['12', '34']).excludes) === '[12,34]');
+ok('非数组输入不炸', JSON.stringify(ns.setExcludes('9901').excludes) === '[]');
+ok('清空可用', JSON.stringify(ns.setExcludes([]).excludes) === '[]');
+// 配置表被写坏（比如人工改过库）也不能让整个流量模块挂掉
+ok('坏 JSON 容错为空数组', (function () {
+  ns.setConfig({ excludes: '{不是 JSON' });
+  return JSON.stringify(ns.getExcludes()) === '[]';
+})(), JSON.stringify(ns.getExcludes()));
+ok('配置值不被 excludes 污染', ns.getConfig().top_n === ns.DEFAULTS.top_n, ns.getConfig().top_n);
+
 console.log('\n== 清理与统计 ==');
 const cl = ns.cleanup(0); // days<1 会被夹到 1
 ok('cleanup 可执行', cl.ok === true, 'deleted=' + cl.deleted);

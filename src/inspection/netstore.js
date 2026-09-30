@@ -40,7 +40,13 @@ const DEFAULTS = {
   cool_down_min: 30,   // 同端口告警冷却
   keep_days: 7,        // 采样保留天数
   save_idle: 0,        // 0 = 丢弃空闲/DOWN 端口的采样（省空间）
-  top_n: 20            // TopN 默认条数
+  top_n: 20,           // TopN 默认条数
+  // 台账里判为「网络交换机」、但实际不能被采集的设备 id 列表（JSON 字符串）。
+  // 典型场景：防火墙/路由器为了走 SSH 巡检，被登记成交换机，但它既没有
+  // 「端口 + ARP + MAC 表」这套数据，也就不可能有端口级流量 —— 每 5 分钟
+  // 去采一次只会永远失败、把真正的故障淹掉。这里让管理员单独把这类设备摘出去，
+  // 巡检照旧，只是不再请求流量。存成 JSON 字符串是为了只用既有配置表、不改表结构。
+  excludes: '[]'
 };
 
 function now() {
@@ -177,6 +183,39 @@ function setConfig(patch) {
     lastError = String((e && e.message) || e);
     return { ok: false, reason: lastError };
   }
+}
+
+/* ---------------- 采集范围（不参与流量采集的设备） ----------------
+ *
+ * 为什么单独做，而不是在台账里加「防火墙」类型：
+ * 「能不能 SSH 上去巡检」和「能不能采端口级流量」是两件事。
+ * 防火墙/路由器为了巡检常常被登记成交换机，摘掉类型就会连巡检一起没了。
+ */
+
+function parseExcludes(v) {
+  let arr = null;
+  try { arr = JSON.parse(String(v == null ? '[]' : v)); } catch (e) { arr = null; }
+  if (!Array.isArray(arr)) return [];
+  const out = [];
+  for (const x of arr) {
+    const n = Number(x);
+    if (Number.isFinite(n) && n > 0 && !out.includes(n)) out.push(n);
+  }
+  return out;
+}
+
+/** 不参与流量采集的设备 id 数组（始终返回数组，读不到就是空） */
+function getExcludes() {
+  const cfg = getConfig();
+  return parseExcludes(cfg.excludes);
+}
+
+/** 写入整套名单（幂等、去重、过滤非法值）；返回 { ok, excludes } */
+function setExcludes(ids) {
+  const list = Array.isArray(ids) ? ids : [];
+  const clean = parseExcludes(JSON.stringify(list));
+  const r = setConfig({ excludes: JSON.stringify(clean) });
+  return { ok: !!r.ok, excludes: clean, reason: r.reason || '' };
 }
 
 /* ---------------- 采样写入 ---------------- */
@@ -599,6 +638,7 @@ function stats() {
 module.exports = {
   DEFAULTS, init, now, agoText, fmtBps, median,
   getConfig, setConfig,
+  getExcludes, setExcludes, parseExcludes,
   saveSamples, baseline, detectBursts, saveAlerts,
   latest, topIp, topPort, series, trend, listAlerts, ackAlert, ackAll,
   cleanup, stats,

@@ -22,6 +22,7 @@ const fs = require('fs');
 
 const ROOT = path.join(__dirname, '..');
 const TMP_DB = path.join(os.tmpdir(), 'netflow-e2e-' + Date.now() + '.db');
+
 process.env.INSPECT_DB_FILE = TMP_DB;
 process.env.PORT = process.env.PORT || '3999';
 
@@ -118,6 +119,49 @@ function eq(tag, a, b) {
   ok('返回数组', Array.isArray(r.json.data.items), (r.json.data.items || []).length + ' 台');
   ok('只含交换机', (r.json.data.items || []).every((d) => !d.os || d.os === 'switch'));
 
+  console.log('\n== 采集范围（不参与流量采集的设备） ==');
+  // 台账
+  // 设备台账在 contract.db 里，而 config.CONTRACT_DB_FILE 是硬编码的、
+  // 不认环境变量 —— 没法给它造一个临时库，往开发库里插数据更不行。
+  // 所以这里用「替换模块导出」的办法喂假台账：路由拿到的是 module 对象本身，
+  // 改它上面的 listRows 就够了，测完必须还原，否则会污染后面的用例。
+  const deviceRepo = require(path.join(ROOT, 'src', 'inspection', 'device-repo'));
+  const realListRows = deviceRepo.listRows;
+  const fwId = 902;   // 假台账里那台「360 防火墙」
+  deviceRepo.listRows = () => ([
+    { id: 901, name: '测试交换机-门诊楼', host: '10.99.0.2', os: 'switch', location: '', remark: '' },
+    { id: fwId, name: '360防火墙-边界', host: '10.99.0.9', os: 'switch', location: '边界', remark: '' }
+  ]);
+
+  r = await call('GET', '/api/inspection/netflow/devices');
+  eq('台账里两台交换机', ((r.json.data && r.json.data.items) || []).length, 2);
+  const dv = (r.json.data && r.json.data.items) || [];
+  ok('设备都带 enabled 字段', dv.length > 0 && dv.every((d) => typeof d.enabled === 'boolean'),
+    dv.map((d) => d.name + '=' + d.enabled).join(','));
+  ok('默认全都参与采集', dv.every((d) => d.enabled === true));
+
+  r = await call('GET', '/api/inspection/netflow/excludes');
+  eq('code 0', r.json && r.json.code, 0);
+  ok('初始名单为空', Array.isArray(r.json.data.ids) && !r.json.data.ids.length, JSON.stringify(r.json.data.ids));
+
+  // 把防火墙那台摘出去 —— 这正是本次要解决的问题
+  r = await call('PUT', '/api/inspection/netflow/excludes', { ids: [fwId, fwId, 'bad', 0] });
+  eq('保存成功', r.json && r.json.code, 0);
+  ok('去重并过滤脏值', JSON.stringify(r.json.data.ids) === '[' + fwId + ']', JSON.stringify(r.json.data.ids));
+
+  r = await call('GET', '/api/inspection/netflow/devices');
+  const dv2 = (r.json.data && r.json.data.items) || [];
+  ok('防火墙那台 enabled=false', dv2.some((d) => d.id === fwId && d.enabled === false));
+  ok('其余仍为 true', dv2.some((d) => d.id !== fwId && d.enabled === true));
+  ok('回显 excludes', (r.json.data.excludes || []).indexOf(fwId) >= 0, JSON.stringify(r.json.data.excludes));
+
+  r = await call('PUT', '/api/inspection/netflow/excludes', { ids: 'not-an-array' });
+  eq('非数组返回 400', r.json && r.json.code, 400);
+  await call('PUT', '/api/inspection/netflow/excludes', { ids: [] });
+  deviceRepo.listRows = realListRows;   // 还原，别影响后面的用例
+  r = await call('GET', '/api/inspection/netflow/excludes');
+  ok('可清空', ((r.json.data && r.json.data.ids) || []).length === 0);
+
   console.log('\n== GET /netflow/top ==');
   r = await call('GET', '/api/inspection/netflow/top?type=ip&minutes=120&limit=10');
   eq('code 0', r.json && r.json.code, 0);
@@ -201,9 +245,9 @@ function eq(tag, a, b) {
 
   console.log('\n----------------------------------------');
   console.log('通过 ' + pass + ' 项，失败 ' + fails.length + ' 项');
-  try { fs.unlinkSync(TMP_DB); } catch (e) { /* 忽略 */ }
-  try { fs.unlinkSync(TMP_DB + '-wal'); } catch (e) { /* 忽略 */ }
-  try { fs.unlinkSync(TMP_DB + '-shm'); } catch (e) { /* 忽略 */ }
+  for (const suffix of ['', '-wal', '-shm']) {
+    try { fs.unlinkSync(TMP_DB + suffix); } catch (e) { /* 忽略 */ }
+  }
   if (fails.length) {
     for (const f of fails) console.log('  x ' + f);
     process.exit(1);
