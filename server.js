@@ -166,6 +166,14 @@ function sourceLabel(mode) {
 issueDb.init();
 getSecret();
 
+// 操作日志自动清理：logs 表此前没有任何保留上限。
+// 自己包一层 —— 清理失败只是表继续长，绝不值得为它让服务起不来
+try {
+  require('./src/logclean').scheduleLogCleanup();
+} catch (e) {
+  console.warn('>>> 操作日志清理调度失败（业务不受影响）：' + ((e && e.message) || e));
+}
+
 const server = app.listen(config.PORT, config.HOST, () => {
   const addr = server.address();
   console.log('==============================================');

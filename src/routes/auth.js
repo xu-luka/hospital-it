@@ -3,6 +3,7 @@ const express = require('express');
 const { db, verifyPassword, hashPassword } = require('../db-contract');
 const { signJwt, authRequired } = require('../auth');
 const { logAction } = require('../utils');
+const loginLock = require('../loginlock');
 
 const router = express.Router();
 
@@ -32,15 +33,28 @@ router.post('/login', (req, res) => {
   const pwd = String(password || '');
   if (!name || !pwd) return res.status(400).json({ code: 400, message: '请输入用户名和密码' });
 
+  // 失败锁定：锁定期直接 429，不查库不验密码（正确密码也不放行，否则锁定形同虚设）
+  const remain = loginLock.lockedRemainingMs(name);
+  if (remain > 0) {
+    const mins = Math.ceil(remain / 60000);
+    return res.status(429).json({ code: 429, message: '失败次数过多，账号已锁定，请 ' + mins + ' 分钟后再试' });
+  }
+
   const row = db.prepare(
     `SELECT u.*, r.name AS role_name FROM users u LEFT JOIN roles r ON u.role_id = r.id WHERE u.username = ?`
   ).get(name);
   if (!row || !verifyPassword(pwd, row.salt, row.password_hash)) {
-    logAction({ id: null, username: name }, '登录', `用户名 ${name} 登录失败`, req.ip);
+    const r = loginLock.recordFailure(name);
+    if (r.locked) {
+      logAction({ id: null, username: name }, '登录', `用户名 ${name} 连续登录失败 ${loginLock.MAX_FAILS} 次，账号锁定 ${loginLock.LOCK_MS / 60000} 分钟`, req.ip);
+    } else {
+      logAction({ id: null, username: name }, '登录', `用户名 ${name} 登录失败`, req.ip);
+    }
     return res.status(401).json({ code: 401, message: '用户名或密码错误' });
   }
   if (row.is_active !== 1) return res.status(403).json({ code: 403, message: '账号已停用，请联系管理员' });
 
+  loginLock.recordSuccess(name);
   const token = signJwt({ id: row.id, username: row.username, roleId: row.role_id });
   logAction({ id: row.id, username: row.username }, '登录', `用户 ${name} 登录成功`, req.ip);
   res.json({ code: 0, data: { token, user: publicUser(row) } });

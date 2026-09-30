@@ -50,6 +50,22 @@ if (fs.existsSync(config.INSPECT_DB_FILE)) {
   }
 }
 
+// 技术文档库：docs.db（索引/标签/分类）+ uploads/docs（Word/PDF 原文件）。
+// 这是不可再生的业务数据 —— 以前漏了它，意味着一次重装就丢全部文档；
+// 快照失败同样只告警不失败，但要是它存在而没进备份，必须醒目提示。
+const snapDocs = path.join(os.tmpdir(), `docs-snap-${Date.now()}.db`);
+let haveDocs = false;
+if (fs.existsSync(config.DOCS_DB_FILE)) {
+  try {
+    const d = new DatabaseSync(config.DOCS_DB_FILE, { readOnly: true });
+    d.exec(`VACUUM INTO '${snapDocs.replace(/'/g, "''")}'`);
+    d.close();
+    haveDocs = true;
+  } catch (e) {
+    console.error('[BACKUP WARN] 文档库 docs.db 快照失败（备份将继续，但文档索引缺失！）：' + e.message);
+  }
+}
+
 // 主密钥：secrets/master.key 是 26 条加密设备凭据的唯一解密钥，
 // 走的是 Windows DPAPI LocalMachine，换机器即失效且无法找回 —— 必须进备份，
 // 否则一次重装就把整份机房设备清单变成一堆解不开的密文。
@@ -62,6 +78,7 @@ const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'hosp-bak-'));
 fs.copyFileSync(snapContract, path.join(staging, 'contract.db'));
 fs.copyFileSync(snapIssue, path.join(staging, 'his.db'));
 if (haveInspect) fs.copyFileSync(snapInspect, path.join(staging, 'inspect.db'));
+if (haveDocs) fs.copyFileSync(snapDocs, path.join(staging, 'docs.db'));
 if (fs.existsSync(config.SECRET_FILE)) fs.copyFileSync(config.SECRET_FILE, path.join(staging, '.secret'));
 if (fs.existsSync(secretsDir)) {
   try {
@@ -78,6 +95,15 @@ const upStaging = path.join(staging, 'uploads');
 fs.mkdirSync(upStaging, { recursive: true });
 if (fs.existsSync(config.CONTRACT_UPLOAD_DIR)) fs.cpSync(config.CONTRACT_UPLOAD_DIR, path.join(upStaging, 'contract'), { recursive: true });
 if (fs.existsSync(config.UPLOAD_DIR)) fs.cpSync(config.UPLOAD_DIR, path.join(upStaging, 'issue'), { recursive: true });
+// 技术文档原文件；.converted 是预览转换缓存（可再生产物，量大），不随备份打包
+let haveDocsFiles = false;
+if (fs.existsSync(config.DOCS_UPLOAD_DIR)) {
+  fs.cpSync(config.DOCS_UPLOAD_DIR, path.join(upStaging, 'docs'), {
+    recursive: true,
+    filter: (src) => path.basename(src) !== '.converted'
+  });
+  haveDocsFiles = true;
+}
 
 // 3) 打 zip
 const tag = new Date().toISOString().slice(0, 10).replace(/-/g, '');
@@ -117,11 +143,14 @@ try { fs.rmSync(staging, { recursive: true, force: true }); } catch (e) { /* ign
 try { fs.unlinkSync(snapContract); } catch (e) { /* ignore */ }
 try { fs.unlinkSync(snapIssue); } catch (e) { /* ignore */ }
 if (haveInspect) { try { fs.unlinkSync(snapInspect); } catch (e) { /* ignore */ } }
+if (haveDocs) { try { fs.unlinkSync(snapDocs); } catch (e) { /* ignore */ } }
 
 const sizeKB = (fs.statSync(zipPath).size / 1024).toFixed(1);
 console.log('[BACKUP OK] ' + zipPath + '（' + sizeKB + ' KB）');
 console.log('  含 contract.db / his.db / .secret'
   + (haveInspect ? ' / inspect.db（巡检历史）' : '')
+  + (haveDocs ? ' / docs.db（文档索引）' : '')
+  + (haveDocsFiles ? ' / uploads\\docs（文档原件）' : '')
   + (haveSecrets ? ' / secrets（设备凭据解密钥）' : ''));
 console.log('  巡检报告 HTML 不随备份打包（data/reports，属可再生产物，量大且随时可重新生成）；');
-console.log('  如需长期留档请单独归档该目录。');
+console.log('  文档预览缓存 uploads\\docs\\.converted 同理（重开文档会自动重建）。');

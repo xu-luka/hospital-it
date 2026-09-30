@@ -55,6 +55,17 @@ module.exports = {
   // ---- 附件 ----
   MAX_FILE_SIZE: 50 * 1024 * 1024,
 
+  // ---- 操作日志 ----
+  // 与流量采样（7 天）、巡检历史（90 天）对齐的做法：给 logs 表一个保留上限，
+  // 由 src/logclean.js 启动时 + 每 12 小时自动清理，审计追溯 180 天足够
+  LOG_KEEP_DAYS: parseInt(process.env.LOG_KEEP_DAYS || '180', 10),
+
+  // ---- 登录保护 ----
+  // 同一用户名连续失败 LOGIN_LOCK_MAX 次，锁定 LOGIN_LOCK_MINUTES 分钟（src/loginlock.js）。
+  // 锁定期间连正确密码也不放行，登录成功立即清零
+  LOGIN_LOCK_MAX: parseInt(process.env.LOGIN_LOCK_MAX || '5', 10),
+  LOGIN_LOCK_MINUTES: parseInt(process.env.LOGIN_LOCK_MINUTES || '10', 10),
+
   // ---- 问题分类 ----
   CATEGORIES: ['日常软件', '日常硬件', '政策性接口'],
   SUB_MODULES: {
