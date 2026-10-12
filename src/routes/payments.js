@@ -2,10 +2,11 @@
 const express = require('express');
 const router = express.Router();
 const { db } = require('../db-contract');
-const { authRequired } = require('../auth');
+const { authRequired, guardModule } = require('../auth');
 const { logAction } = require('../utils');
 
-router.use(authRequired);
+// 收付款：读要 view、写要 manage（同 contracts，原来只校验登录）
+router.use(authRequired, guardModule('payments'));
 
 // 数字安全化：非有限数字一律归为 0
 function safeNum(v) {

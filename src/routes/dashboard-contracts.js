@@ -2,10 +2,12 @@
 const express = require('express');
 const router = express.Router();
 const { db } = require('../db-contract');
-const { authRequired } = require('../auth');
+const { authRequired, guardModule } = require('../auth');
 const config = require('../../config');
 
-router.use(authRequired);
+// 工作台是各模块统计的汇总页，只要求「工作台.查看」；
+// 卡片是否展示由前端按用户实际权限决定（没权限就不请求，也就不会返回数据）
+router.use(authRequired, guardModule('dashboard'));
 
 // GET /api/dashboard - 首页统计
 router.get('/', (req, res) => {

@@ -300,9 +300,9 @@
     },
 
     computed: {
+      // 设备台账的写操作（新增/编辑/删除/启停用/测试连接/巡检参数）看「设备台账.管理」
       isAdmin() {
-        const u = window.HisUser && window.HisUser.user;
-        return !!(u && u.role_id === 1);
+        return !!(window.HisPerm && window.HisPerm.can('devices.manage'));
       },
       osOptions() {
         const all = (this.meta && this.meta.osTypes) || [];

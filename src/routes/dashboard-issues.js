@@ -1,10 +1,11 @@
 'use strict';
 const express = require('express');
 const { getDb } = require('../db');
-const { authRequired } = require('../auth');
+const { authRequired, guardModule } = require('../auth');
 
 const router = express.Router();
-router.use(authRequired);
+// 工作台统计：只要「工作台.查看」
+router.use(authRequired, guardModule('dashboard'));
 
 // 统计总览
 router.get('/', (req, res) => {

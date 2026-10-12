@@ -375,13 +375,12 @@
     },
 
     computed: {
+      // 阈值设置 / 采集范围 / 立即采集 / 告警确认 → 流量监控.管理
       isAdmin() {
-        const u = window.HisUser && window.HisUser.user;
-        return !!(u && u.role_id === 1);
+        return !!(window.HisPerm && window.HisPerm.can('netflow.manage'));
       },
       canOperate() {
-        const u = window.HisUser && window.HisUser.user;
-        return !!(u && (u.role_id === 1 || u.role_id === 2));
+        return !!(window.HisPerm && window.HisPerm.can('netflow.manage'));
       },
       /** 上一轮逐台的采集结果（含每台失败的真实原因） */
       perDevice() {

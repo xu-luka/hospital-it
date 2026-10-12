@@ -8,11 +8,28 @@ const config = require('../../config');
 const { getDb, fixFilename } = require('../db');
 // 统一账号体系在合同库（contract.db users）；问题库 users 仅历史遗留，不再用于业务查询
 const { db: contractDb } = require('../db-contract');
-const { authRequired, requireRole } = require('../auth');
+const { authRequired, requirePerm, guardModule } = require('../auth');
 const { toSafeNum, toSafeText, logAction, genIssueNo } = require('../utils');
 
 const router = express.Router();
 router.use(authRequired);
+
+// ---- 工单权限：读 = issues.view，处理（指派/改状态/编辑/删除）= issues.manage ----
+// 例外是「提交类」接口：新建工单、追加跟进记录、上传/删除附件。
+// 报障人（普通用户）默认只有 issues.view + issues.create，必须能提交工单、
+// 能补充说明、能传截图，所以这几个接口只要求 issues.create，不能按写方法一刀切成 manage。
+const CREATE_WRITE_PATHS = [
+  /^\/$/,                    // POST /            新建工单
+  /^\/[^/]+\/logs$/,         // POST /:id/logs    追加跟进
+  /^\/[^/]+\/files$/,        // POST /:id/files   上传附件
+  /^\/[^/]+\/files\/[^/]+$/, // DELETE /:id/files/:fileId  删掉自己传错的附件
+];
+router.use((req, res, next) => {
+  const isWrite = ['POST', 'PUT', 'PATCH', 'DELETE'].indexOf(req.method) >= 0;
+  const isCreateWrite = isWrite && CREATE_WRITE_PATHS.some((re) => re.test(req.path));
+  if (isCreateWrite) return requirePerm('issues.create')(req, res, next);
+  return guardModule('issues')(req, res, next);
+});
 
 // ---- 附件存储：随机文件名，原名进库 ----
 const storage = multer.diskStorage({
@@ -149,7 +166,7 @@ router.get('/meta/years', (req, res) => {
 
 // 批量状态流转（工程师/管理员）：逐条校验合法流转，不合法的跳过并回报
 // 注意：必须在 /:id 系列路由之前注册，否则 /batch 会被当作 :id 吞掉
-router.post('/batch/status', requireRole(1, 2), (req, res) => {
+router.post('/batch/status', (req, res) => {
   const db = getDb();
   const b = req.body || {};
   const ids = Array.isArray(b.ids) ? b.ids.map((x) => toSafeNum(x)).filter((x) => x > 0) : [];
@@ -283,7 +300,7 @@ router.put('/:id', (req, res) => {
 });
 
 // 指派处理人（工程师/管理员）
-router.put('/:id/assignee', requireRole(1, 2), (req, res) => {
+router.put('/:id/assignee', (req, res) => {
   const db = getDb();
   const id = toSafeNum(req.params.id);
   const issue = db.prepare('SELECT * FROM issues WHERE id = ?').get(id);
@@ -304,7 +321,7 @@ router.put('/:id/assignee', requireRole(1, 2), (req, res) => {
 });
 
 // 状态流转
-router.post('/:id/status', requireRole(1, 2), (req, res) => {
+router.post('/:id/status', (req, res) => {
   const db = getDb();
   const id = toSafeNum(req.params.id);
   const issue = db.prepare('SELECT * FROM issues WHERE id = ?').get(id);
@@ -467,7 +484,7 @@ router.get('/:id/files/preview/:fileId', (req, res) => {
 });
 
 // 删除问题（仅管理员，级联删除处理记录与附件）
-router.delete('/:id', requireRole(1), (req, res) => {
+router.delete('/:id', (req, res) => {
   const db = getDb();
   const id = toSafeNum(req.params.id);
   const issue = db.prepare('SELECT * FROM issues WHERE id = ?').get(id);

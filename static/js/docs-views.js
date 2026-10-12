@@ -22,8 +22,8 @@
       <div class="filter-bar">
         <input class="grow" v-model="f.kw" placeholder="搜索标题 / 文件名 / 标签 / 备注" @keyup.enter="goPage(1)">
         <button class="btn btn-primary" @click="goPage(1)">查 询</button>
-        <button class="btn btn-outline" @click="openCats">管理类型</button>
-        <button class="btn btn-primary" @click="openUpload">＋ 上传文档</button>
+        <button v-if="canManage" class="btn btn-outline" @click="openCats">管理类型</button>
+        <button v-if="canManage" class="btn btn-primary" @click="openUpload">＋ 上传文档</button>
       </div>
 
       <!-- 类型筛选 -->
@@ -190,6 +190,8 @@
 
     computed: {
       pageCount() { return Math.max(1, Math.ceil(this.total / this.pageSize)); },
+      // 上传 / 删除文档、管理文档类型都属于「技术文档库.管理」
+      canManage() { return !!(window.HisPerm && window.HisPerm.can('docs.manage')); },
       pages() {
         const pc = this.pageCount, p = this.page, arr = [];
         for (let i = Math.max(1, p - 2); i <= Math.min(pc, p + 2); i++) arr.push(i);

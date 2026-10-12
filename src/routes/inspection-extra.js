@@ -6,16 +6,18 @@
  * 这里放的是「要靠子进程跑几分钟」的重任务，生命周期模型完全不同。
  */
 const express = require('express');
-const { authRequired } = require('../auth');
+const { authRequired, guardModule, hasPerm } = require('../auth');
 const scheduler = require('../inspection/scheduler');
 const collector = scheduler.collector;
 const history = scheduler.history;
 const { logAction } = require('../utils');
 
 const router = express.Router();
+// 趋势/可用性/轮次看 巡检报告.查看；生成报告任务看 巡检报告.管理
+router.use(authRequired, guardModule('inspection'));
 
-/** 写操作：1 管理员 / 2 工程师 */
-function canOperate(u) { return u && (u.role_id === 1 || u.role_id === 2); }
+/** 写操作：看角色的「巡检报告.管理」权限 */
+function canOperate(u) { return hasPerm(u && u.perms, 'inspection.manage'); }
 
 /* ---------------- 历史趋势 ---------------- */
 

@@ -102,6 +102,10 @@
       detailId: null, editData: null
     }; },
     async mounted() { await this.loadCategories(); await this.load(); },
+    computed: {
+      // 写操作（新增/编辑/删除/导入）看「合同台账.管理」；导出是读，不受限
+      canManage() { return !!(window.HisPerm && window.HisPerm.can('contracts.manage')); },
+    },
     methods: {
       async load() {
         const q = new URLSearchParams({ page: this.page, pageSize: this.pageSize, sort: this.sort });
@@ -178,8 +182,8 @@
           <button class="btn btn-ghost" @click="reset">重置</button>
           <div class="grow"></div>
           <button class="btn btn-ghost" @click="exportExcel" :disabled="exporting">{{ exporting ? '导出中…' : '导出Excel' }}</button>
-          <button class="btn btn-ghost" @click="openImport">导入</button>
-          <button class="btn btn-primary" @click="createContract">+ 新增合同</button>
+          <button v-if="canManage" class="btn btn-ghost" @click="openImport">导入</button>
+          <button v-if="canManage" class="btn btn-primary" @click="createContract">+ 新增合同</button>
         </div>
         <table class="cm-table">
           <thead>
@@ -194,7 +198,7 @@
               <td class="num"><span style="color:#16a34a">{{ fmtMoney(r.paid_amount) }}</span> / <span style="color:var(--danger)">{{ fmtMoney(r.unpaid_amount) }}</span></td>
               <td class="mono">{{ r.end_date || '-' }}</td>
               <td><span class="tag" :class="statusTag(r.status)">{{ r.status }}</span></td>
-              <td class="ops"><a @click="openDetail(r)" style="cursor:pointer">详情</a> <a @click="editContract(r)" style="cursor:pointer;margin-left:8px">编辑</a></td>
+              <td class="ops"><a @click="openDetail(r)" style="cursor:pointer">详情</a> <a v-if="canManage" @click="editContract(r)" style="cursor:pointer;margin-left:8px">编辑</a></td>
             </tr>
           </tbody>
         </table>
@@ -317,7 +321,9 @@
       }
     },
     computed: {
-      dl() { return this.c ? daysLeft(this.c.end_date) : null; }
+      dl() { return this.c ? daysLeft(this.c.end_date) : null; },
+      // 详情里的增删改（付款、附件、编辑合同）都属于「合同台账.管理」
+      canManage() { return !!(window.HisPerm && window.HisPerm.can('contracts.manage')); },
     },
     template: `
     <div class="modal-mask" @click.self="$emit('close')">
@@ -418,14 +424,14 @@
                     <td>{{ p.method || '-' }}</td>
                     <td>{{ p.remark || '-' }}</td>
                     <td class="ops">
-                      <div class="row-actions"><button class="btn btn-danger btn-sm" @click="delPayment(p)">删除</button></div>
+                      <div class="row-actions"><button v-if="canManage" class="btn btn-danger btn-sm" @click="delPayment(p)">删除</button></div>
                     </td>
                   </tr>
                 </tbody>
               </table>
             </div>
             <div class="empty" v-else style="padding:10px;margin-bottom:10px">暂无付款记录</div>
-            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;background:#f8fafc;border:1px dashed var(--border);border-radius:8px;padding:10px">
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;background:#f8fafc;border:1px dashed var(--border);border-radius:8px;padding:10px" v-if="canManage">
               <input v-model.number="payForm.amount" type="number" min="0" placeholder="金额" style="width:110px;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px">
               <input v-model="payForm.pay_date" type="date" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:13px">
               <select v-model="payForm.method" style="padding:7px 8px;border:1px solid var(--border);border-radius:6px;font-size:13px">
@@ -442,12 +448,12 @@
                 <span class="fname"><span>{{ f.filename }}</span><span class="fsize">{{ fmtSize(f.size) }}</span></span>
                 <span>
                   <a @click="downloadFile(f)" style="margin-right:12px;cursor:pointer">下载</a>
-                  <a style="color:var(--danger);cursor:pointer" @click="delFile(f)">删除</a>
+                  <a v-if="canManage" style="color:var(--danger);cursor:pointer" @click="delFile(f)">删除</a>
                 </span>
               </li>
             </ul>
             <div v-else class="empty" style="padding:14px">暂无附件</div>
-            <div style="display:flex;gap:10px;margin-top:12px;align-items:center">
+            <div style="display:flex;gap:10px;margin-top:12px;align-items:center" v-if="canManage">
               <input type="file" @change="onFileSelected" style="font-size:13px">
               <button class="btn btn-primary btn-sm" :disabled="uploading" @click="onUpload">{{ uploading ? '上传中…' : '上传附件' }}</button>
             </div>
@@ -455,8 +461,8 @@
         </div>
         <div class="modal-foot">
           <button class="btn btn-ghost" @click="$emit('close')">关闭</button>
-          <button class="btn btn-primary btn-sm" @click="$emit('edit', c)">编辑</button>
-          <button class="btn btn-danger btn-sm" style="margin-left:auto" @click="del">删除合同</button>
+          <button v-if="canManage" class="btn btn-primary btn-sm" @click="$emit('edit', c)">编辑</button>
+          <button v-if="canManage" class="btn btn-danger btn-sm" style="margin-left:auto" @click="del">删除合同</button>
         </div>
       </div>
     </div>`
@@ -629,11 +635,21 @@
         try { this.roles = await api.get('/api/roles'); } catch (e) {}
       },
       roleName(id) { const r = this.roles.find(x => x.id === id); return r ? r.name : '-'; },
-      roleClass(id) { return 'tag-role-' + (id || 3); },
+      // 新增用户的默认角色：优先「普通用户」（内置 code=user），没有就用第一个角色。
+      // 不再写死 role_id=3 —— 角色已经是数据了，写死迟早选到一个不存在的角色。
+      defaultRoleId() {
+        const u = this.roles.find((r) => r.code === 'user');
+        return u ? u.id : ((this.roles[0] && this.roles[0].id) || 0);
+      },
+      // 角色可以自由新增，颜色按 id 在 4 个色板里循环取（写死 1/2/3 的对照表迟早对不上）
+      roleClass(id) {
+        const n = Number(id) || 0;
+        return 'tag-role-' + ((n > 0 ? (n - 1) : 2) % 4 + 1);
+      },
       isSelf(u) { return !!this.me.username && u.username === this.me.username; },
       initial(u) { return String(u.realName || u.username || '?').slice(0, 1); },
       when(u) { return u.createdAt || u.created_at || '-'; },
-      openAdd() { this.form = { isAdd: true, username: '', real_name: '', password: '', role_id: 3 }; },
+      openAdd() { this.form = { isAdd: true, username: '', real_name: '', password: '', role_id: this.defaultRoleId() }; },
       openEdit(u) { this.form = { isAdd: false, id: u.id, username: u.username, real_name: u.realName, password: '', role_id: u.roleId, is_active: u.isActive }; },
       async save() {
         if (!this.form) return;

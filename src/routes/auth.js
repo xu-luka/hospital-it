@@ -1,14 +1,15 @@
 'use strict';
 const express = require('express');
 const { db, verifyPassword, hashPassword } = require('../db-contract');
-const { signJwt, authRequired } = require('../auth');
+const { signJwt, authRequired, getRolePerms } = require('../auth');
 const { logAction } = require('../utils');
 const loginLock = require('../loginlock');
 
 const router = express.Router();
 
 // 用户信息序列化（兼容合同系 camelCase 与问题系 snake_case 前端字段）
-function publicUser(row) {
+// perms：该用户角色拥有的权限编码数组，前端据此渲染菜单与按钮
+function publicUser(row, perms) {
   return {
     id: row.id,
     username: row.username,
@@ -18,11 +19,14 @@ function publicUser(row) {
     roleId: row.role_id,
     role_name: row.role_name || '',
     roleName: row.role_name || '',
+    role_code: row.role_code || '',
+    roleCode: row.role_code || '',
     is_active: row.is_active,
     isActive: row.is_active === 1,
     active: row.is_active,
     phone: row.phone || '',
     created_at: row.created_at,
+    perms: perms || [],
   };
 }
 
@@ -41,7 +45,7 @@ router.post('/login', (req, res) => {
   }
 
   const row = db.prepare(
-    `SELECT u.*, r.name AS role_name FROM users u LEFT JOIN roles r ON u.role_id = r.id WHERE u.username = ?`
+    `SELECT u.*, r.name AS role_name, r.code AS role_code FROM users u LEFT JOIN roles r ON u.role_id = r.id WHERE u.username = ?`
   ).get(name);
   if (!row || !verifyPassword(pwd, row.salt, row.password_hash)) {
     const r = loginLock.recordFailure(name);
@@ -57,16 +61,19 @@ router.post('/login', (req, res) => {
   loginLock.recordSuccess(name);
   const token = signJwt({ id: row.id, username: row.username, roleId: row.role_id });
   logAction({ id: row.id, username: row.username }, '登录', `用户 ${name} 登录成功`, req.ip);
-  res.json({ code: 0, data: { token, user: publicUser(row) } });
+  const permInfo = getRolePerms(row.role_id, row.role_code);
+  res.json({ code: 0, data: { token, user: publicUser(row, permInfo.perms) } });
 });
 
 // 当前用户信息
 router.get('/me', authRequired, (req, res) => {
   const row = db.prepare(
-    `SELECT u.*, r.name AS role_name FROM users u LEFT JOIN roles r ON u.role_id = r.id WHERE u.id = ?`
+    `SELECT u.*, r.name AS role_name, r.code AS role_code FROM users u LEFT JOIN roles r ON u.role_id = r.id WHERE u.id = ?`
   ).get(req.user.id);
   if (!row) return res.status(404).json({ code: 404, message: '用户不存在' });
-  res.json({ code: 0, data: publicUser(row) });
+  // 权限每次现查：管理员刚调过的权限，用户刷新页面（前端会自动调 /me）就生效，无需重新登录
+  const permInfo = getRolePerms(row.role_id, row.role_code);
+  res.json({ code: 0, data: publicUser(row, permInfo.perms) });
 });
 
 // 修改自己的密码

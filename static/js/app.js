@@ -122,12 +122,12 @@
       <div class="page-title">工作台</div>
       <div class="page-sub">医院信息科日常管理总览 · {{ todayStr }}</div>
       <div class="dash-tabs">
-        <button class="dash-tab" :class="{active: tab==='contract'}" @click="switchTab('contract')">📄 合同台账</button>
-        <button class="dash-tab" :class="{active: tab==='issue'}" @click="switchTab('issue')">🗂️ 问题记录</button>
+        <button v-if="canContracts" class="dash-tab" :class="{active: tab==='contract'}" @click="switchTab('contract')">📄 合同台账</button>
+        <button v-if="canIssues" class="dash-tab" :class="{active: tab==='issue'}" @click="switchTab('issue')">🗂️ 问题记录</button>
       </div>
 
       <!-- ===== 合同面板 ===== -->
-      <div v-if="tab==='contract'">
+      <div v-if="tab==='contract' && canContracts">
         <div class="remind-bar" v-if="cd && (cd.overdue + cd.expiring) > 0">
           <strong>到期提醒：</strong>
           <span v-if="cd.overdue > 0">{{ cd.overdue }} 份合同已过期，</span>
@@ -171,7 +171,7 @@
       </div>
 
       <!-- ===== 问题面板 ===== -->
-      <div v-if="tab==='issue'">
+      <div v-if="tab==='issue' && canIssues">
         <div class="stat-grid">
           <div class="stat-card"><div class="num">{{ d.total }}</div><div class="lbl">问题总数</div><div class="bar bar-blue"></div></div>
           <div class="stat-card"><div class="num">{{ d.today }}</div><div class="lbl">今日新增</div><div class="bar bar-red"></div></div>
@@ -238,6 +238,9 @@
         const x = new Date();
         return x.getFullYear() + '-' + String(x.getMonth() + 1).padStart(2, '0') + '-' + String(x.getDate()).padStart(2, '0');
       },
+      // 工作台两个面板各自对应模块的查看权限
+      canContracts() { return !!(window.HisPerm && window.HisPerm.can('contracts.view')); },
+      canIssues() { return !!(window.HisPerm && window.HisPerm.can('issues.view')); },
     },
     methods: {
       fmt: (s) => fmtDate(s),
@@ -263,6 +266,8 @@
       goIssue(id) { location.hash = '#/issue/' + id; },
       goRemind() { location.hash = '#/remind'; },
       switchTab(t) {
+        if (t === 'contract' && !this.canContracts) return;
+        if (t === 'issue' && !this.canIssues) return;
         this.tab = t;
         if (t === 'contract' && !this.cd) this.loadContract();
         if (t === 'issue' && (!this.d || !this.d.total)) this.loadIssue();
@@ -283,9 +288,11 @@
       },
     },
     async mounted() {
-      this.tab = 'contract';
-      await this.loadContract();
-      await this.loadIssue();
+      // 工作台的两个面板各自对应模块的查看权限：没有合同权限的人不必看到合同统计，
+      // 也不去请求那个接口（省一次必然 403 的调用）
+      if (this.canContracts) await this.loadContract();
+      if (this.canIssues) await this.loadIssue();
+      if (!this.canContracts && this.canIssues) this.tab = 'issue';
     },
   };
 
@@ -321,7 +328,7 @@
         <button class="btn btn-primary" @click="goPage(1)">查 询</button>
         <button class="btn btn-outline" @click="exportExcel" :disabled="exporting">{{ exporting ? '导出中…' : '导出Excel' }}</button>
         <button class="btn btn-outline" @click="openImport">导入</button>
-        <button class="btn btn-outline" @click="newIssue">+ 新建问题</button>
+        <button v-if="canCreate" class="btn btn-outline" @click="newIssue">+ 新建问题</button>
       </div>
       <div class="cat-bar">
         <button class="cat-btn" :class="{active: !f.category}" @click="setCat('')">全部</button>
@@ -431,7 +438,8 @@
     },
     computed: {
       pageCount() { return Math.max(1, Math.ceil(this.total / this.pageSize)); },
-      canBatch() { const u = window.HisUser && window.HisUser.user; return u && (u.role_id === 1 || u.role_id === 2); },
+      canBatch() { return !!(window.HisPerm && window.HisPerm.can('issues.manage')); },
+      canCreate() { return !!(window.HisPerm && window.HisPerm.can('issues.create')); },
       allChecked() { return this.list.length > 0 && this.list.every((it) => this.selectedIds.includes(it.id)); },
       pages() {
         const pc = this.pageCount, p = this.page, arr = [];
@@ -678,8 +686,8 @@
               <button v-if="canOperate && d.issue.status==='processing'" class="btn btn-outline" @click="doStatus('pending')">退回待处理</button>
               <button v-if="canOperate && (d.issue.status==='resolved'||d.issue.status==='closed')" class="btn btn-outline" @click="doStatus('pending')">重新打开</button>
               <button v-if="canAssign" class="btn btn-outline" @click="openAssign">指派处理人</button>
-              <button class="btn btn-outline" @click="openEdit">编辑基本信息</button>
-              <button v-if="isAdmin" class="btn btn-danger" @click="removeIssue">删除问题</button>
+              <button v-if="canManage" class="btn btn-outline" @click="openEdit">编辑基本信息</button>
+              <button v-if="canManage" class="btn btn-danger" @click="removeIssue">删除问题</button>
             </div>
           </div>
           <div class="card" style="font-size:12px;color:var(--gray)">
@@ -758,9 +766,11 @@
       };
     },
     computed: {
-      isAdmin() { const u = window.HisUser && window.HisUser.user; return u && u.role_id === 1; },
-      canOperate() { const u = window.HisUser && window.HisUser.user; return u && (u.role_id === 1 || u.role_id === 2); },
-      canAssign() { return this.canOperate; },
+      // 处理工单（改状态/指派/编辑/删除）看「问题工单.处理」权限，不再写死角色 ID
+      canManage() { return !!(window.HisPerm && window.HisPerm.can('issues.manage')); },
+      canOperate() { return this.canManage; },
+      canAssign() { return this.canManage; },
+      canCreate() { return !!(window.HisPerm && window.HisPerm.can('issues.create')); },
       imageFiles() { return (this.d && this.d.files || []).filter((f) => f.is_image); },
       previewableFiles() { return (this.d && this.d.files || []).filter((f) => f.preview_kind); },
     },

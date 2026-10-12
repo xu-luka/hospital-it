@@ -12,13 +12,14 @@ const path = require('path');
 const multer = require('multer');
 const config = require('../../config');
 const { raw: db } = require('../db-docs');
-const { authRequired } = require('../auth');
+const { authRequired, guardModule } = require('../auth');
 const { fixFilename } = require('../db'); // 与问题附件同一套中文名修复
 const { logAction } = require('../utils');
 const docpreview = require('../docpreview');
 
 const router = express.Router();
-router.use(authRequired);
+// 技术文档库：读要 view、上传/改名/删除要 manage
+router.use(authRequired, guardModule('docs'));
 
 // ---------- 文件存储（随机名，原名进库，中文名做 latin1→utf8 还原） ----------
 // 扩展名只作提示，真实格式以文件头嗅探结果为准（防止 .doc 改名 .docx 导致预览空白）

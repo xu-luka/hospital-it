@@ -7,16 +7,18 @@
  * 显式带在 Authorization 头，浏览器不会自动附加，CSRF 攻击面不存在。
  *
  * 权限映射（原巡检只有 admin/viewer 两级）：
- *   role 1 管理员 / 2 工程师 / 3 普通用户
- *   查看类（大屏、报告）全员可见；触发巡检限 1/2；重载配置与审计仅 1
+ * 权限：读接口走 巡检报告.查看；触发巡检、重载配置走 巡检报告.管理（由角色权限决定，
+ * 不再写死「1 管理员 / 2 工程师」）。权限定义在 src/perm.js。
  */
 const express = require('express');
-const { authRequired } = require('../auth');
+const { authRequired, guardModule, hasPerm } = require('../auth');
 const scheduler = require('../inspection/scheduler');
 const store = require('../inspection/report-store');
 const { logAction } = require('../utils');
 
 const router = express.Router();
+// 读接口（状态/报告/健康检查）要 巡检报告.查看，写接口（触发巡检/重载配置）要 巡检报告.管理
+router.use(authRequired, guardModule('inspection'));
 
 /**
  * 解析报告名。
@@ -33,9 +35,9 @@ function normalizeName(raw) {
   try { return decodeURIComponent(s); } catch (e) { return s; }
 }
 
-/** 是否允许写操作（1 管理员 / 2 工程师） */
-function canOperate(u) { return u && (u.role_id === 1 || u.role_id === 2); }
-function isAdmin(u) { return u && u.role_id === 1; }
+/** 是否允许写操作（看角色的「巡检报告.管理」权限，不再认写死的角色 ID） */
+function canOperate(u) { return hasPerm(u && u.perms, 'inspection.manage'); }
+function isAdmin(u) { return hasPerm(u && u.perms, 'inspection.manage'); }
 
 /* ---------------- 只读：大屏状态 ---------------- */
 

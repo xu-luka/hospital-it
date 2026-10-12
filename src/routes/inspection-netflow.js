@@ -13,7 +13,7 @@
  * 免得流量模块一挂就把整个监控页面变成报错页。
  */
 const express = require('express');
-const { authRequired } = require('../auth');
+const { authRequired, guardModule, hasPerm } = require('../auth');
 const netmon = require('../inspection/netmon');
 const store = require('../inspection/netstore');
 const netflow = require('../inspection/netflow');
@@ -21,9 +21,11 @@ const deviceRepo = require('../inspection/device-repo');
 const { logAction } = require('../utils');
 
 const router = express.Router();
+// 查询类接口要 流量监控.查看；立即采集 / 阈值设置 / 采集范围 / 告警确认要 流量监控.管理
+router.use(authRequired, guardModule('netflow'));
 
-function canOperate(u) { return u && (u.role_id === 1 || u.role_id === 2); }
-function isAdmin(u) { return u && u.role_id === 1; }
+function canOperate(u) { return hasPerm(u && u.perms, 'netflow.manage'); }
+function isAdmin(u) { return hasPerm(u && u.perms, 'netflow.manage'); }
 
 function toInt(v, def, min, max) {
   const n = Number(v);

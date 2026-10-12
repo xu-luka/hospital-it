@@ -4,10 +4,11 @@ const router = express.Router();
 const multer = require('multer');
 const XLSX = require('xlsx');
 const { db } = require('../db-contract');
-const { authRequired } = require('../auth');
+const { authRequired, guardModule } = require('../auth');
 const { logAction } = require('../utils');
 
-router.use(authRequired);
+// 合同导入导出：模板/导出是读（contracts.view），导入是写（contracts.manage）
+router.use(authRequired, guardModule('contracts'));
 
 // ---------- 列定义（模板 / 导出 / 导入三端共用） ----------
 // stat: true 表示仅导出统计列，导入时忽略

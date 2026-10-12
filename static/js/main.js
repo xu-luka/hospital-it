@@ -1,13 +1,67 @@
 /* 根组件 + 应用挂载 */
 (function () {
   const V = window.HisViews;
-  const ROLE_NAME = { 1: '管理员', 2: '工程师', 3: '普通用户' };
+  const can = function (c) { return !!(window.HisPerm && window.HisPerm.can(c)); };
+
+  // 侧边栏菜单：perm 决定可见性。菜单定义集中在这里，新增模块时只改这一处。
+  // 图标沿用原来的 emoji，避免这次改造顺手动到视觉。
+  const MENU = [
+    { title: '概览', items: [
+      { path: 'dashboard', icon: '📊', label: '工作台', perm: 'dashboard.view' },
+    ] },
+    { title: '合同管理', items: [
+      { path: 'contracts', icon: '📄', label: '合同台账', perm: 'contracts.view' },
+      { path: 'remind', icon: '⏰', label: '到期提醒', perm: 'remind.view' },
+    ] },
+    { title: '系统问题管理', items: [
+      { path: 'issues', icon: '🗂️', label: '问题记录', perm: 'issues.view', activeAlso: ['issue'] },
+      { path: 'issue/new', icon: '➕', label: '新建问题', perm: 'issues.create', activePath: 'issue', activeId: 'new' },
+    ] },
+    { title: '技术文档库', items: [
+      { path: 'docs', icon: '📚', label: '技术文档', perm: 'docs.view' },
+    ] },
+    { title: '机房巡检', items: [
+      { path: 'bigscreen', icon: '📺', label: '监控大屏', perm: 'screen.view' },
+      { path: 'devices', icon: '🖥️', label: '设备台账', perm: 'devices.view' },
+      { path: 'reports', icon: '📑', label: '巡检报告', perm: 'inspection.view' },
+      { path: 'netflow', icon: '🌐', label: '流量监控', perm: 'netflow.view' },
+    ] },
+    { title: '系统管理', items: [
+      { path: 'users', icon: '👥', label: '用户管理', perm: 'users.manage' },
+      { path: 'roles', icon: '🔑', label: '角色权限', perm: 'roles.manage' },
+      { path: 'logs', icon: '📜', label: '操作日志', perm: 'logs.view' },
+    ] },
+  ];
+
+  // 每个可访问页面所需的查看权限。直接改地址栏 / 收藏夹旧链接进来时按这个守卫。
+  const VIEW_PERM = {
+    dashboard: 'dashboard.view',
+    contracts: 'contracts.view',
+    remind: 'remind.view',
+    issues: 'issues.view',
+    issue: 'issues.view',
+    docs: 'docs.view',
+    doc: 'docs.view',
+    bigscreen: 'screen.view',
+    devices: 'devices.view',
+    reports: 'inspection.view',
+    netflow: 'netflow.view',
+    users: 'users.manage',
+    roles: 'roles.manage',
+    logs: 'logs.view',
+  };
 
   // 全局响应式：登录用户、路由
   const userState = Vue.reactive({ user: api.user });
   const routeState = Vue.reactive({ path: '', id: null });
   // 暴露给视图组件使用（比 $root 更可靠）
   window.HisUser = userState;
+
+  // 某个地址当前需要的权限。#/issue/new 是「新建」页，要的是提交权限而不是查看权限
+  function needPermFor(p) {
+    if (p === 'issue' && routeState.id === 'new') return 'issues.create';
+    return VIEW_PERM[p];
+  }
 
   function parseHash() {
     const h = location.hash.replace(/^#\/?/, '');
@@ -41,52 +95,15 @@
             </div>
           </div>
           <nav class="sidebar-menu">
-            <div class="menu-item" :class="{active: route.path==='dashboard'}" @click="go('dashboard')">
-              <span class="menu-icon">📊</span>工作台
-            </div>
+            <template v-for="g in menuGroups" :key="g.title">
+              <div class="nav-group-title">{{ g.title }}</div>
+              <div v-for="it in g.items" :key="it.path" class="menu-item sub"
+                   :class="{active: isActive(it)}" @click="go(it.path)">
+                <span class="menu-icon">{{ it.icon }}</span>{{ it.label }}
+              </div>
+            </template>
 
-            <div class="nav-group-title">合同管理</div>
-            <div class="menu-item sub" :class="{active: route.path==='contracts'}" @click="go('contracts')">
-              <span class="menu-icon">📄</span>合同台账
-            </div>
-            <div class="menu-item sub" :class="{active: route.path==='remind'}" @click="go('remind')">
-              <span class="menu-icon">⏰</span>到期提醒
-            </div>
-
-            <div class="nav-group-title">系统问题管理</div>
-            <div class="menu-item sub" :class="{active: route.path==='issues' || route.path==='issue'}" @click="go('issues')">
-              <span class="menu-icon">🗂️</span>问题记录
-            </div>
-            <div class="menu-item sub" :class="{active: route.path==='issue' && route.id==='new'}" @click="go('issue/new')">
-              <span class="menu-icon">➕</span>新建问题
-            </div>
-
-            <div class="nav-group-title">技术文档库</div>
-            <div class="menu-item sub" :class="{active: route.path==='docs'}" @click="go('docs')">
-              <span class="menu-icon">📚</span>技术文档
-            </div>
-
-            <div class="nav-group-title">机房巡检</div>
-            <div class="menu-item sub" :class="{active: route.path==='bigscreen'}" @click="go('bigscreen')">
-              <span class="menu-icon">📺</span>监控大屏
-            </div>
-            <div class="menu-item sub" :class="{active: route.path==='devices'}" @click="go('devices')">
-              <span class="menu-icon">🖥️</span>设备台账
-            </div>
-            <div class="menu-item sub" :class="{active: route.path==='reports'}" @click="go('reports')">
-              <span class="menu-icon">📑</span>巡检报告
-            </div>
-            <div class="menu-item sub" :class="{active: route.path==='netflow'}" @click="go('netflow')">
-              <span class="menu-icon">🌐</span>流量监控
-            </div>
-
-            <div class="nav-group-title">系统管理</div>
-            <div v-if="isAdmin" class="menu-item sub" :class="{active: route.path==='users'}" @click="go('users')">
-              <span class="menu-icon">👥</span>用户管理
-            </div>
-            <div v-if="isAdmin" class="menu-item sub" :class="{active: route.path==='logs'}" @click="go('logs')">
-              <span class="menu-icon">📜</span>操作日志
-            </div>
+            <div class="nav-group-title">账号</div>
             <div class="menu-item sub" @click="openPwd">
               <span class="menu-icon">🔒</span>修改密码
             </div>
@@ -133,22 +150,35 @@
 
     computed: {
       u() { return userState.user; },
-      isAdmin() { const u = userState.user; return u && u.role_id === 1; },
+      isAdmin() { const u = userState.user; return !!(u && String(u.role_code || u.roleCode || '') === 'admin'); },
+      // 角色名直接用后端返回的（角色已经可以自由新增/改名，写死的对照表必然对不上）
       roleName() {
         const u = userState.user;
-        return u ? (ROLE_NAME[u.role_id] || '') : '';
+        return u ? (u.role_name || u.roleName || u.username || '') : '';
       },
       route() { return routeState; },
+      // 按权限过滤菜单：没有权限的分组整组隐藏，不留空标题
+      menuGroups() {
+        return MENU.map((g) => ({
+          title: g.title,
+          items: g.items.filter((it) => can(it.perm)),
+        })).filter((g) => g.items.length > 0);
+      },
       curView() {
         if (!userState.user) return 'login-view';
         const p = routeState.path;
+        // 权限守位：无权限时不静默跳到别的页面（用户会以为点错了），
+        // 而是显示明确的「没有权限」提示，并说明去哪儿开权限
+        const need = needPermFor(p);
+        if (need && !can(need)) return 'no-perm-view';
         if (p === 'dashboard') return 'dashboard-view';
         if (p === 'contracts') return 'contracts-view';
         if (p === 'remind') return 'remind-view';
         if (p === 'issues') return 'issues-view';
         if (p === 'issue') return routeState.id === 'new' ? 'new-issue-view' : 'issue-detail-view';
-        if (p === 'users') return this.isAdmin ? 'users-view' : 'issues-view';
-        if (p === 'logs') return this.isAdmin ? 'logs-view' : 'issues-view';
+        if (p === 'users') return 'users-view';
+        if (p === 'roles') return 'perm-view';
+        if (p === 'logs') return 'logs-view';
         if (p === 'devices') return 'devices-view';
         // 组件名必须能与注册名 BigScreenView 对应：Vue 的 resolveAsset 只会尝试
         // 「原样 / camelize / capitalize(camelize)」三种写法。若写成 'bigscreen-view'，
@@ -165,7 +195,29 @@
     },
 
     methods: {
+      isActive(it) {
+        if (it.activePath) return routeState.path === it.activePath && routeState.id === it.activeId;
+        const paths = [it.path].concat(it.activeAlso || []);
+        return paths.indexOf(routeState.path) >= 0;
+      },
+      // 当前角色能进的第一个页面：登录后若停在无权页面，就落到这里
+      firstAllowedPath() {
+        for (const g of MENU) {
+          for (const it of g.items) {
+            if (can(it.perm)) return it.path.split('/')[0];
+          }
+        }
+        return 'dashboard';
+      },
       go(p) { location.hash = '#/' + p; },
+      ensureRouteAllowed() {
+        const p = routeState.path;
+        if (!p || p === 'login') return;
+        const need = needPermFor(p);
+        if (!need || can(need)) return;
+        const fallback = this.firstAllowedPath();
+        if (fallback !== p) location.hash = '#/' + fallback;
+      },
       openPwd() {
         this.pf = { old: '', next: '', next2: '' };
         this.showPwd = true;
@@ -195,9 +247,22 @@
       },
     },
 
+    watch: {
+      // 登录后 / 切换账号后，如果当前地址栏停在无权页面，落到第一个有权限的页面
+      u(nu) {
+        if (!nu) return;
+        this.ensureRouteAllowed();
+      },
+    },
+
     mounted() {
       // 已登录（localStorage 恢复）时拉取最新分类/模块清单（含自定义项）
       if (api.user && window.loadHisModules) window.loadHisModules();
+      if (api.user && window.HisPerm) {
+        // 老会话（浏览器里缓存的用户信息还没有 perms 字段）自动补拉一次真实权限。
+        // 不做这一步的话，升级后所有已登录用户会看到空菜单 —— 会被当成"系统坏了"。
+        window.HisPerm.refresh().then(() => this.ensureRouteAllowed());
+      }
     },
   };
 
@@ -231,6 +296,14 @@
       app.component(n, V[n]);
     } else {
       console.error('[main.js] 文档库组件缺失，未注册：' + n + '（对应页面会显示空白）');
+    }
+  });
+  // 角色权限配置页 + 无权限提示页（同样禁止「有就注册、没有静默跳过」）
+  ['PermView', 'NoPermView'].forEach((n) => {
+    if (V[n]) {
+      app.component(n, V[n]);
+    } else {
+      console.error('[main.js] 权限组件缺失，未注册：' + n + '（角色权限页或无权限提示页会显示空白）');
     }
   });
   app.component('ContractsView', V.ContractsView);

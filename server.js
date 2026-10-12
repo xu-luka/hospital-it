@@ -25,6 +25,21 @@ app.use(express.urlencoded({ extended: true }));
 app.use('/api/auth', require('./src/routes/auth'));
 app.use('/api/users', require('./src/routes/users'));
 app.use('/api/roles', require('./src/routes/roles'));
+
+// 角色权限：给「还没配过权限」的内置角色写入默认权限。
+// 按本项目的约定，这种锦上添花的初始化必须自己兜异常：即使失败，
+// perm.js 读取时也会退回内置默认值，不会把所有人挡在门外。
+try {
+  const seedRes = require('./src/perm').ensureSeed();
+  if (seedRes.seeded.length) console.log('>>> 角色权限已初始化默认值：' + seedRes.seeded.join('、'));
+  if (seedRes.unconfigured && seedRes.unconfigured.length) {
+    console.log('>>> 以下角色尚未配置权限，其用户登录后将看不到任何模块：' + seedRes.unconfigured.join('、')
+      + '（管理员登录后在【系统管理 → 角色权限】里勾选即可）');
+  }
+} catch (e) {
+  console.warn('>>> 角色权限初始化失败（忽略，将按内置默认值运行）：' + ((e && e.message) || e));
+}
+
 // 合同业务
 app.use('/api/contracts', require('./src/routes/contracts'));
 app.use('/api/payments', require('./src/routes/payments'));

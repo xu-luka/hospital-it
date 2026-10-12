@@ -72,11 +72,15 @@
         <button class="scr-btn" @click="toggleFull">{{ full ? '退出投屏' : '全屏投屏' }}</button>
       </div>
 
-      <div v-if="alertItems.length" class="scr-alert">
+      <div v-if="canInspect && alertItems.length" class="scr-alert">
         <div v-for="(a,i) in alertItems" :key="i">{{ a }}</div>
       </div>
 
-      <div class="scr-stats">
+      <div v-if="!canInspect" class="scr-alert">
+        <div>当前角色未被分配「巡检报告 · 查看」权限，大屏不显示巡检数据{{ canNetflow ? '，仅显示流量部分' : '' }}。需要查看请让管理员在【系统管理 → 角色权限】中勾选。</div>
+      </div>
+
+      <div v-if="canInspect" class="scr-stats">
         <div class="scr-stat t"><div class="num">{{ summary.total }}</div><div class="lbl">设备总数</div></div>
         <div class="scr-stat n"><div class="num">{{ summary.normal }}</div><div class="lbl">正常</div></div>
         <div class="scr-stat w"><div class="num">{{ summary.warning }}</div><div class="lbl">警告</div></div>
@@ -162,8 +166,9 @@
         </div>
       </div>
 
-      <div v-if="!groups.length" class="scr-empty">{{ data.updatedAt ? '当前没有纳管中的设备' : '正在加载巡检数据…' }}</div>
+      <div v-if="canInspect && !groups.length" class="scr-empty">{{ data.updatedAt ? '当前没有纳管中的设备' : '正在加载巡检数据…' }}</div>
 
+      <template v-if="canInspect">
       <div v-for="g in groups" :key="g.key" class="scr-sec" :class="{collapsed: ui[g.key].collapsed}">
         <div class="scr-sec-head">
           <div class="scr-sec-toggle" @click="toggleGroup(g.key)">
@@ -227,6 +232,7 @@
         </div>
       </div>
       </div>
+      </template>
 
       <!-- 版式 B：右侧固定流量栏。放在滚动区之外，滚设备列表时它始终在 -->
       <aside v-if="nf.ready && nfMode==='aside'" class="nf-aside">
@@ -294,8 +300,13 @@
 
     computed: {
       user() { return window.HisUser ? window.HisUser.user : null; },
-      isAdmin() { const u = this.user; return u && u.role_id === 1; },
-      canOperate() { const u = this.user; return u && (u.role_id === 1 || u.role_id === 2); },
+      // 大屏是「显示终端」：能不能打开看「监控大屏.查看」，
+      // 能显示哪些内容取决于有没有对应模块的查看权限 —— 没有就不请求、不显示，
+      // 避免出现"勾了大屏却满屏 403 报错"这种莫名其妙的状态。
+      isAdmin() { return !!(window.HisPerm && window.HisPerm.can('inspection.manage')); },
+      canOperate() { return !!(window.HisPerm && window.HisPerm.can('inspection.manage')); },
+      canInspect() { return !!(window.HisPerm && window.HisPerm.can('inspection.view')); },
+      canNetflow() { return !!(window.HisPerm && window.HisPerm.can('netflow.view')); },
       summary() {
         const s = this.data.summary || {};
         return { total: s.total || 0, normal: s.normal || 0, warning: s.warning || 0, critical: s.critical || 0, error: s.error || 0 };
@@ -583,7 +594,10 @@
         }
       },
 
-      refreshAll() { this.load(); this.loadNetflow(); },
+      refreshAll() {
+        if (this.canInspect) this.load();
+        if (this.canNetflow) this.loadNetflow();
+      },
 
       setNfMode(k) { this.nfMode = k; this.saveNfPref(); },
       setNfType(k) { this.nfType = k; this.saveNfPref(); },
@@ -655,12 +669,17 @@
       this.ensureUi();
       this.loadNfPref();
       this.tick();
-      this.load();
-      this.loadNetflow();
+      // 没有对应权限的接口一律不请求：既不会刷出一堆 403 提示，也少两次无用请求
+      if (this.canInspect) {
+        this.load();
+        this._p = setInterval(this.load, 15000);
+      }
+      if (this.canNetflow) {
+        this.loadNetflow();
+        // 流量 5 分钟才采一轮，跟着 15 秒轮询纯属浪费；60 秒足够跟上手工触发的采集
+        this._n = setInterval(this.loadNetflow, 60000);
+      }
       this._t = setInterval(this.tick, 1000);
-      this._p = setInterval(this.load, 15000);
-      // 流量 5 分钟才采一轮，跟着 15 秒轮询纯属浪费；60 秒足够跟上手工触发的采集
-      this._n = setInterval(this.loadNetflow, 60000);
       document.addEventListener('fullscreenchange', this.onFsChange);
     },
 
@@ -761,7 +780,8 @@
 
     computed: {
       user() { return window.HisUser ? window.HisUser.user : null; },
-      canOperate() { const u = this.user; return u && (u.role_id === 1 || u.role_id === 2); },
+      // 生成报告属于巡检的写操作 → 巡检报告.管理
+      canOperate() { return !!(window.HisPerm && window.HisPerm.can('inspection.manage')); },
       shortDir() {
         const s = this.dir || '';
         return s.length > 34 ? '…' + s.slice(-34) : s;

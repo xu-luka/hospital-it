@@ -2,10 +2,11 @@
 const express = require('express');
 const router = express.Router();
 const { db } = require('../db-contract');
-const { authRequired, requireRole } = require('../auth');
+const { authRequired, requirePerm } = require('../auth');
 
 // 操作日志仅管理员可查
-router.use(authRequired, requireRole(1));
+// 操作日志：只读页面，要求「操作日志.查看」（原为仅管理员，现由角色权限决定）
+router.use(authRequired, requirePerm('logs.view'));
 
 // GET /api/logs - 日志列表（分页 + 可选按用户/动作筛选）
 router.get('/', (req, res) => {

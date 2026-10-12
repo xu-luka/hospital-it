@@ -7,10 +7,11 @@ const XLSX = require('xlsx');
 const config = require('../../config');
 const { getDb } = require('../db');
 const { db: contractDb } = require('../db-contract');
-const { authRequired } = require('../auth');
+const { authRequired, guardModule } = require('../auth');
 const { logAction, toSafeText, genIssueNo } = require('../utils');
 
-router.use(authRequired);
+// 工单导入导出：模板/导出是读（issues.view），导入是写（issues.manage）
+router.use(authRequired, guardModule('issues'));
 
 // ---------- 列定义（模板 / 导出 / 导入三端共用） ----------
 // stat: true 表示仅导出列，导入时忽略

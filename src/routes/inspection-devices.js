@@ -23,7 +23,7 @@
  *   3. 审计日志只记「谁改了哪台设备的哪些字段」，不记字段值。
  */
 const express = require('express');
-const { authRequired } = require('../auth');
+const { authRequired, guardModule, hasPerm } = require('../auth');
 const { logAction } = require('../utils');
 const repo = require('../inspection/device-repo');
 const secret = require('../inspection/lib/secret');
@@ -31,8 +31,10 @@ const inspect = require('../inspection/inspect');
 const scheduler = require('../inspection/scheduler');
 
 const router = express.Router();
+// 台账查询要 设备台账.查看；增删改、启停用、测试连接、巡检参数与数据源设置要 设备台账.管理
+router.use(authRequired, guardModule('devices'));
 
-function isAdmin(u) { return u && Number(u.role_id) === 1; }
+function isAdmin(u) { return hasPerm(u && u.perms, 'devices.manage'); }
 function deny(res) { return res.status(403).json({ code: 403, message: '没有权限执行该操作' }); }
 function bad(res, errors) {
   return res.status(400).json({ code: 400, message: '参数校验未通过', errors: errors });

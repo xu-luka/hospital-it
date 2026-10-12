@@ -2,11 +2,13 @@
 const express = require('express');
 const router = express.Router();
 const { db } = require('../db-contract');
-const { authRequired } = require('../auth');
+const { authRequired, guardModule } = require('../auth');
 const { logAction } = require('../utils');
 const config = require('../../config');
 
-router.use(authRequired);
+// 读接口要 合同台账.查看，写接口要 合同台账.管理（改造前这里只校验登录，
+// 也就是任何登录用户都能改合同 —— 顺带把这口子补上）
+router.use(authRequired, guardModule('contracts'));
 
 // ---------- 输入安全工具：确保绑定到 SQLite 的值永远合法 ----------
 function toSafeNum(v, fallback) {

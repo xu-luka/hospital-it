@@ -4,6 +4,8 @@ const crypto = require('crypto');
 const fs = require('fs');
 const config = require('../config');
 const { db } = require('./db-contract');
+// 权限判定与中间件都从 perm.js 再导出一份，路由侧只需 require('../auth') 一处
+const { getRolePerms, requirePerm, guardModule, hasPerm } = require('./perm');
 
 let secret = null;
 function getSecret() {
@@ -59,9 +61,12 @@ function authRequired(req, res, next) {
     return res.status(401).json({ code: 401, message: '未登录或登录已过期' });
   }
   const row = db.prepare(
-    `SELECT u.*, r.name AS role_name FROM users u LEFT JOIN roles r ON u.role_id = r.id WHERE u.id = ?`
+    `SELECT u.*, r.name AS role_name, r.code AS role_code FROM users u LEFT JOIN roles r ON u.role_id = r.id WHERE u.id = ?`
   ).get(userId);
   if (!row || row.is_active !== 1) return res.status(401).json({ code: 401, message: '账号不存在或已停用' });
+  // 权限集合随请求带出（每次查库，不用缓存）：角色权限改了立刻生效，
+  // 不需要让用户重新登录，也不用担心缓存不一致
+  const permInfo = getRolePerms(row.role_id, row.role_code);
   // 兼容两套路由字段：合同系用 id/username/roleId/realName，问题系用 role_id/real_name/active
   req.user = {
     id: row.id,
@@ -72,22 +77,29 @@ function authRequired(req, res, next) {
     roleId: row.role_id,
     role_name: row.role_name || '',
     roleName: row.role_name || '',
+    role_code: row.role_code || '',
+    roleCode: row.role_code || '',
     is_active: row.is_active,
     isActive: row.is_active === 1,
     active: row.is_active,
     phone: row.phone || '',
     created_at: row.created_at,
+    perms: permInfo.perms,
+    permsSource: permInfo.source,
   };
   next();
 }
 
-// 角色校验：requireRole(1, 2)
+// 角色校验（旧写法，按写死的角色 ID 判断）。
+// 新代码请用 requirePerm('模块.动作')：角色可以自由新增，写死 ID 的判定迟早会漏。
+// 保留此函数只为兼容历史调用，勿在新路由中使用。
 function requireRole(...roleIds) {
   return (req, res, next) => {
     if (!req.user) return res.status(401).json({ code: 401, message: '未登录' });
-    if (!roleIds.includes(req.user.role_id)) return res.status(403).json({ code: 403, message: '没有权限执行该操作' });
+    const rid = req.user.role_id !== undefined ? req.user.role_id : req.user.roleId;
+    if (roleIds.indexOf(rid) < 0) return res.status(403).json({ code: 403, message: '没有权限执行该操作' });
     next();
   };
 }
 
-module.exports = { signJwt, verifyJwt, authRequired, requireRole, getSecret };
+module.exports = { signJwt, verifyJwt, authRequired, requireRole, requirePerm, guardModule, hasPerm, getRolePerms, getSecret };
