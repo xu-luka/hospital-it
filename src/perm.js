@@ -54,6 +54,11 @@ const MODULES = [
   // 普通用户要能提交工单，但不该能动别人的工单状态
   { code: 'issues', name: '问题工单', group: '系统问题管理', acts: ['view', 'create', 'manage'], actLabels: { manage: '处理' } },
   { code: 'docs', name: '技术文档库', group: '技术文档库', acts: ['view', 'manage'] },
+  // 网页书签：密码单独一档「看密码」。
+  // 刻意不让 manage 隐含它 —— 能改书签的人不一定该看到口令，
+  // 否则「按角色授予是否可查看密码」这个需求根本落不了地（勾了管理就等于勾了看密码）。
+  { code: 'bookmarks', name: '网页书签', group: '资源管理', acts: ['view', 'manage', 'secret'], actLabels: { secret: '看密码' } },
+  { code: 'ipam', name: 'IP 管理', group: '资源管理', acts: ['view', 'manage'] },
   { code: 'screen', name: '监控大屏', group: '机房巡检', acts: ['view'] },
   { code: 'devices', name: '设备台账', group: '机房巡检', acts: ['view', 'manage'] },
   { code: 'inspection', name: '巡检报告', group: '机房巡检', acts: ['view', 'manage'] },
@@ -74,9 +79,17 @@ const ALL_PERMS = (() => {
 // 注意方向 —— 是「哪些动作能满足 X」，不是「X 能推出哪些动作」。
 // （写反过一次：结果持有 manage 的角色读不到 view 接口，因为管理员是 '*' 把问题盖住了）
 const SATISFIED_BY = {
-  view: ['view', 'create', 'manage'],   // 能提交/能处理的人当然能看
+  // 能提交/能处理的人当然能看；另外「能看密码」的人也当然能看列表 ——
+  // 否则管理员单独勾「看密码」会造出一个「有权限点却打不开页面」的角色
+  // （列表接口要 view、接口又要先过 view），在界面上完全看不出问题。
+  view: ['view', 'create', 'manage', 'secret'],
   create: ['create', 'manage'],         // 能处理的人当然能提交
   manage: ['manage'],
+  // ★ 例外：secret 只由自己满足，不被 manage 隐含。
+  //   它是「能不能看到别人的口令」这种敏感动作，必须能单独开关；
+  //   若写成 ['manage']，管理员把 manage 勾给某角色时会连带把看密码也送出去，
+  //   而这个后果在权限页上完全看不出来（勾了「管理」，实际多拿到了「看密码」）。
+  secret: ['secret'],
 };
 
 // 内置角色的默认权限（仅在该角色「一条权限行都没有」时写入，之后以库里的为准）
@@ -91,6 +104,11 @@ const OPERATOR_PERMS = [
   'payments.view', 'payments.manage',
   'issues.view', 'issues.create', 'issues.manage',
   'docs.view', 'docs.manage',
+  // 网页书签 / IP 管理：默认把业务权限给到工程师（含看密码），
+  // 不想让某人看密码就在【角色权限】页把「看密码」取消勾选即可 ——
+  // 这一档独立于「管理」，取消它不会连带影响编辑权限。
+  'bookmarks.view', 'bookmarks.manage', 'bookmarks.secret',
+  'ipam.view', 'ipam.manage',
   'screen.view',
   // 设备台账刻意只给查看：改造前只有管理员能新增/编辑设备、测试连接，
   // 这里保持原样，需要时管理员在权限页勾上即可（避免"升级完工程师权限变大了"）

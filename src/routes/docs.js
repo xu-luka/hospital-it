@@ -40,12 +40,22 @@ const upload = multer({
 /**
  * 预览方式：pdf 走浏览器；docx 走 docx-preview；旧版 .doc 若已转出 docx 亦走 docx-preview，
  * 否则标记为 'doc' 由前端拉取纯文本做文本模式预览。
+ *
+ * ★ 入参两种形态都要吃：整行记录（table row），或只给一个扩展名字符串。
+ *   起因是个真实且隐蔽的 bug：列表与详情接口写的是 `previewKindOf(d.ext)`（字符串），
+ *   而函数体按整行读 `d.real_ext || d.ext` —— 字符串上取 `.real_ext` 得到 undefined，
+ *   `String(undefined || undefined || '')` 是空串，于是每次都掉到最后那个 `return ''`。
+ *   后果是列表里**每个**文档的 preview_kind 都是空，前端一律走 `v-else`，
+ *   弹窗显示「该类型暂不支持预览」—— PDF 和 Word 全都预览不了，
+ *   而 /preview 接口自己是好的（它传的是整行），因此后端起服务单独测完全正常，
+ *   极难往参数形状不匹配上想。这里做归一化，两种调用都对。
  */
 function previewKindOf(d) {
-  const e = String((d.real_ext || d.ext) || '').toLowerCase();
+  const row = (d && typeof d === 'object') ? d : { ext: d };
+  const e = String((row.real_ext || row.ext) || '').toLowerCase().replace(/^\./, '');
   if (e === 'pdf') return 'pdf';
   if (e === 'docx') return 'docx';
-  if (e === 'doc') return d.converted_name ? 'docx' : 'doc';
+  if (e === 'doc') return row.converted_name ? 'docx' : 'doc';
   return '';
 }
 const MIME_PREVIEW = {
@@ -158,7 +168,7 @@ router.get('/', (req, res) => {
        LIMIT ? OFFSET ?`
     ).all(...params, pageSize, (page - 1) * pageSize);
 
-    const list = rows.map((d) => Object.assign({}, d, { preview_kind: previewKindOf(d.ext) }));
+    const list = rows.map((d) => Object.assign({}, d, { preview_kind: previewKindOf(d) }));
     res.json({ code: 0, data: { list, total, page, pageSize } });
   } catch (e) {
     res.status(500).json({ code: 500, message: '读取文档失败：' + e.message });
@@ -176,7 +186,7 @@ router.get('/:id', (req, res) => {
      WHERE d.id = ?`
   ).get(Number(req.params.id));
   if (!d) return res.status(404).json({ code: 404, message: '文档不存在' });
-  res.json({ code: 0, data: Object.assign({}, d, { preview_kind: previewKindOf(d.ext) }) });
+  res.json({ code: 0, data: Object.assign({}, d, { preview_kind: previewKindOf(d) }) });
 });
 
 // POST /api/docs —— 上传文档（pdf / docx / doc）
@@ -340,3 +350,9 @@ router.delete('/:id', (req, res) => {
 });
 
 module.exports = router;
+// 仅供 scripts/docs-preview-selftest.js 做离线断言（运行时没人读这个属性）。
+// 之所以要把它掏出来单测：这个函数曾经因为「入参形状」和「函数体读法」不一致，
+// 让列表接口的 preview_kind 恒为空串 —— 而接口能返回 200、后端单独测也正常，
+// 只有把「传进去的东西长什么样」写进断言里才拦得住。挂一个属性比改导出结构安全。
+module.exports.previewKindOf = previewKindOf;
+

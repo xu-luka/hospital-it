@@ -40,10 +40,42 @@ console.log('== 模块清单与编码规范 ==');
 ok(perm.MODULES.length >= 10, '模块数量', perm.MODULES.length);
 const codes = perm.ALL_PERMS;
 eq('编码无重复', codes.length, new Set(codes).size);
-ok(codes.every((c) => /^[a-z][a-z0-9]*\.(view|create|manage)$/.test(c)), '全部编码符合 模块.动作 规范',
-  codes.filter((c) => !/^[a-z][a-z0-9]*\.(view|create|manage)$/.test(c)).join(',') || '无例外');
+// 动作名白名单。以前这里是内联正则 (view|create|manage)，
+// 加了 bookmarks.secret 之后改成显式白名单：既允许「看密码」这种敏感动作，
+// 又仍然拦得住把 secret 拼错成 secrett 之类的低级问题（拼错会静默变成一个永不生效的权限点）。
+const KNOWN_ACTS = ['view', 'create', 'manage', 'secret'];
+const CODE_RE = new RegExp('^[a-z][a-z0-9]*\\.(' + KNOWN_ACTS.join('|') + ')$');
+ok(codes.every((c) => CODE_RE.test(c)), '全部编码符合 模块.动作 规范（动作在白名单内）',
+  codes.filter((c) => !CODE_RE.test(c)).join(',') || '无例外');
 ok(codes.indexOf('issues.create') >= 0, '工单有独立的「提交」档（报障人要用）');
 ok(codes.indexOf('roles.manage') >= 0, '存在 角色权限.管理');
+
+console.log('\n== 敏感动作：看密码（bookmarks.secret）==');
+ok(codes.indexOf('bookmarks.secret') >= 0, '书签有独立的「看密码」权限点');
+// ★ 这三条是这一档存在的全部意义，写错了在界面上完全看不出来：
+//   manage 若能满足 secret，管理员勾「管理」就等于顺带把「看密码」送出去，
+//   而权限矩阵上只显示多了「管理」一勾 —— 「按角色授予是否可查看密码」直接失效。
+eq('持 manage 不能看密码', perm.hasPerm(['bookmarks.manage'], 'bookmarks.secret'), false);
+eq('持 view 不能看密码', perm.hasPerm(['bookmarks.view'], 'bookmarks.secret'), false);
+eq('只有 bookmarks.secret 能满足它自己', perm.hasPerm(['bookmarks.secret'], 'bookmarks.secret'), true);
+eq('管理员 * 仍能看密码', perm.hasPerm(['*'], 'bookmarks.secret'), true);
+// 反向：不能让 secret 反过来把 manage 也顶掉（那会让「只看密码」的角色失去编辑能力）
+eq('持 secret 不等于能管理', perm.hasPerm(['bookmarks.secret'], 'bookmarks.manage'), false);
+eq('持 secret 仍能看到列表', perm.hasPerm(['bookmarks.secret'], 'bookmarks.view'), true);
+
+console.log('\n== 新模块的默认矩阵 ==');
+ok(perm.ALL_PERMS.indexOf('ipam.view') >= 0 && perm.ALL_PERMS.indexOf('ipam.manage') >= 0,
+  'IP 管理有 view / manage 两档');
+ok((perm.DEFAULT_ROLE_PERMS.engineer || []).indexOf('bookmarks.secret') >= 0,
+  '工程师默认能看密码（管理员可在权限页取消）');
+ok((perm.DEFAULT_ROLE_PERMS.user || []).indexOf('bookmarks.view') < 0,
+  '普通用户默认看不到书签模块');
+ok((perm.DEFAULT_ROLE_PERMS.user || []).indexOf('ipam.view') < 0,
+  '普通用户默认看不到 IP 管理');
+// engineer / approver 两套命名都要有（老问题库里是 approver），少写一个那批用户升级后就是零权限
+eq('engineer 与 approver 的新模块权限一致',
+  perm.DEFAULT_ROLE_PERMS.engineer.filter((p) => /^(bookmarks|ipam)\./.test(p)).sort().join(','),
+  perm.DEFAULT_ROLE_PERMS.approver.filter((p) => /^(bookmarks|ipam)\./.test(p)).sort().join(','));
 const mods = perm.describeModules();
 ok(mods.every((m) => m.name && m.group && m.acts.length && m.acts.every((a) => a.label && a.code)),
   'describeModules 每项都有名称/分组/动作/中文标签');

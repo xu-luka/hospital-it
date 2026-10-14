@@ -8,9 +8,14 @@
   // 与后端 SATISFIED_BY 保持一致：要拥有 X，可以持有哪些动作
   // （方向别写反：manage 能满足 view，反之不然）
   const SATISFIED_BY = {
-    view: ['view', 'create', 'manage'],
+    // 与后端一致：看密码（secret）内含查看 —— 单独勾「看密码」的人也要能打开列表，
+    // 否则就是一个「有权限点却打不开页面」的角色
+    view: ['view', 'create', 'manage', 'secret'],
     create: ['create', 'manage'],
     manage: ['manage'],
+    // 与后端一致：看密码（bookmarks.secret）刻意不被 manage 隐含，
+    // 必须能单独授予/取消 —— 否则勾了「管理」等于顺带送出「看密码」。
+    secret: ['secret'],
   };
 
   // 兜底：浏览器 localStorage 里存的还是升级前的用户信息（没有 perms 字段）时，
@@ -23,7 +28,10 @@
       'contracts.view', 'contracts.manage', 'remind.view',
       'payments.view', 'payments.manage',
       'issues.view', 'issues.create', 'issues.manage',
-      'docs.view', 'docs.manage', 'screen.view', 'devices.view',
+      'docs.view', 'docs.manage',
+      'bookmarks.view', 'bookmarks.manage', 'bookmarks.secret',
+      'ipam.view', 'ipam.manage',
+      'screen.view', 'devices.view',
       'inspection.view', 'inspection.manage',
       'netflow.view', 'netflow.manage',
     ],

@@ -45,6 +45,22 @@ app.use('/api/contracts', require('./src/routes/contracts'));
 app.use('/api/payments', require('./src/routes/payments'));
 app.use('/api/files', require('./src/routes/files'));
 app.use('/api/docs', require('./src/routes/docs'));
+
+// 资源管理：网页书签（含密码加密存储）+ IP 管理（网段 / 已用 IP 登记）
+// ★ 这两个是新增模块，各自单独包一层 try/catch。
+//   按本项目的教训：一个「少了两块功能」的问题不该升级成「合同、工单、巡检全起不来」——
+//   部分替换的部署上，新文件缺一个都可能在 require 阶段就抛。
+[
+  ['/api/bookmarks', './src/routes/bookmarks', '网页书签'],
+  ['/api/ipam', './src/routes/ipam', 'IP 管理'],
+].forEach((pair) => {
+  try {
+    app.use(pair[0], require(pair[1]));
+  } catch (e) {
+    console.error('>>> [' + pair[2] + '] 路由装载失败，其余模块不受影响：' + ((e && e.message) || e));
+  }
+});
+
 app.use('/api/excel', require('./src/routes/excel'));
 app.use('/api/logs', require('./src/routes/logs'));
 app.use('/api/dashboard/contracts', require('./src/routes/dashboard-contracts'));

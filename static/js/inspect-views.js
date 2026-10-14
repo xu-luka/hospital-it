@@ -129,7 +129,7 @@
                 {{ checkResult.name }}（{{ checkResult.host }}）· 耗时 {{ checkResult.durationMs }} ms
               </span>
             </div>
-            <div v-if="checkResult.error" style="color:var(--danger);word-break:break-all;padding:8px;background:#fef2f2;border-radius:6px">
+            <div v-if="checkResult.error" class="err-box">
               {{ checkResult.error }}
             </div>
             <div v-else>
@@ -236,7 +236,7 @@
                 </select></div>
             </div>
 
-            <div v-if="errs.length" style="background:#fef2f2;color:var(--danger);padding:8px;border-radius:6px">
+            <div v-if="errs.length" class="err-box">
               <div v-for="e in errs" :key="e">{{ e }}</div>
             </div>
           </div>

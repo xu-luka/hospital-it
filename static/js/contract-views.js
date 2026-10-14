@@ -195,7 +195,7 @@
               <td class="mono">{{ r.contract_no }}</td><td class="title-cell">{{ r.title }}</td>
               <td><span class="chip">{{ r.category || '-' }}</span></td>
               <td>{{ r.party_b || '-' }}</td><td class="num">{{ fmtMoney(r.amount) }}</td>
-              <td class="num"><span style="color:#16a34a">{{ fmtMoney(r.paid_amount) }}</span> / <span style="color:var(--danger)">{{ fmtMoney(r.unpaid_amount) }}</span></td>
+              <td class="num"><span style="color:var(--ok)">{{ fmtMoney(r.paid_amount) }}</span> / <span style="color:var(--bad)">{{ fmtMoney(r.unpaid_amount) }}</span></td>
               <td class="mono">{{ r.end_date || '-' }}</td>
               <td><span class="tag" :class="statusTag(r.status)">{{ r.status }}</span></td>
               <td class="ops"><a @click="openDetail(r)" style="cursor:pointer">详情</a> <a v-if="canManage" @click="editContract(r)" style="cursor:pointer;margin-left:8px">编辑</a></td>
@@ -220,7 +220,7 @@
         <div class="modal modal-sm">
           <div class="modal-head"><h3>Excel 导入</h3><span class="modal-close" @click="importOpen=false">×</span></div>
           <div class="modal-body">
-            <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:12px 14px;margin-bottom:14px;font-size:13px;color:#1e40af">
+            <div class="imp-note">
               第一次使用？请先 <a @click="downloadTemplate" style="cursor:pointer;text-decoration:underline;font-weight:600">下载导入模板</a>
               ，按模板列填写后上传。同一合同有多台设备时：填多行并保持合同编号一致，每行填一台设备。
             </div>
@@ -367,8 +367,8 @@
                 </tbody>
                 <tfoot>
                   <tr>
-                    <td colspan="5" style="text-align:right;color:#475569">合计（{{ c.devices.length }} 种，{{ c.device_count }} 台/件）</td>
-                    <td class="num" style="color:var(--primary)">￥{{ fmtMoney(deviceAmount(c.devices)) }}</td>
+                    <td colspan="5" style="text-align:right;color:var(--muted)">合计（{{ c.devices.length }} 种，{{ c.device_count }} 台/件）</td>
+                    <td class="num" style="color:var(--accent)">￥{{ fmtMoney(deviceAmount(c.devices)) }}</td>
                     <td></td>
                   </tr>
                 </tfoot>
@@ -397,21 +397,22 @@
               <div class="item"><b>资金来源</b><span>{{ c.fund_source || '-' }}</span></div>
             </div>
           </template>
-          <div style="border-top:1px solid var(--border);padding-top:14px;margin-top:4px">
-            <h4 style="font-size:14px;margin-bottom:8px">付款进度</h4>
-            <div style="display:flex;align-items:center;gap:12px;margin-bottom:6px">
-              <div style="flex:1">
-                <div style="height:10px;background:#e2e8f0;border-radius:5px;overflow:hidden">
-                  <div :style="{width: c.pay_percent + '%', height:'10px', background: c.pay_percent >= 100 ? '#16a34a' : '#2563eb', borderRadius:'5px'}"></div>
+          <div class="pay-sec">
+            <h4>付款进度</h4>
+            <div class="pay-bar">
+              <div class="grow">
+                <div class="pay-track">
+                  <div class="pay-fill" :class="{ done: c.pay_percent >= 100 }"
+                       :style="{ width: c.pay_percent + '%' }"></div>
                 </div>
               </div>
-              <span style="font-size:14px;font-weight:600;color:#475569">{{ c.pay_percent }}%</span>
+              <span class="pay-pct">{{ c.pay_percent }}%</span>
             </div>
             <div class="kv" style="margin-bottom:12px">
-              <b style="color:#16a34a">已付 ￥{{ fmtMoney(c.paid_amount) }}</b>
-              <span style="margin:0 10px;color:#cbd5e1">|</span>
-              <b style="color:var(--danger)">未付 ￥{{ fmtMoney(c.unpaid_amount) }}</b>
-              <span style="margin:0 10px;color:#cbd5e1">|</span>
+              <b style="color:var(--ok)">已付 ￥{{ fmtMoney(c.paid_amount) }}</b>
+              <span class="pay-sep">|</span>
+              <b style="color:var(--bad)">未付 ￥{{ fmtMoney(c.unpaid_amount) }}</b>
+              <span class="pay-sep">|</span>
               <span class="muted">总额 ￥{{ fmtMoney(c.amount) }}（{{ (c.payments || []).length }} 笔）</span>
             </div>
             <div class="table-wrap" v-if="c.payments && c.payments.length" style="margin-bottom:10px">
@@ -431,24 +432,24 @@
               </table>
             </div>
             <div class="empty" v-else style="padding:10px;margin-bottom:10px">暂无付款记录</div>
-            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;background:#f8fafc;border:1px dashed var(--border);border-radius:8px;padding:10px" v-if="canManage">
-              <input v-model.number="payForm.amount" type="number" min="0" placeholder="金额" style="width:110px;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px">
-              <input v-model="payForm.pay_date" type="date" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:13px">
-              <select v-model="payForm.method" style="padding:7px 8px;border:1px solid var(--border);border-radius:6px;font-size:13px">
+            <div class="pay-form" v-if="canManage">
+              <input class="pay-amt" v-model.number="payForm.amount" type="number" min="0" placeholder="金额">
+              <input v-model="payForm.pay_date" type="date">
+              <select v-model="payForm.method">
                 <option value="">付款方式</option><option>银行转账</option><option>现金</option><option>支票</option><option>承兑汇票</option><option>其他</option>
               </select>
-              <input v-model="payForm.remark" placeholder="备注" style="width:150px;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px">
+              <input class="pay-remark" v-model="payForm.remark" placeholder="备注">
               <button class="btn btn-primary btn-sm" @click="addPayment">添加付款</button>
             </div>
           </div>
-          <div style="border-top:1px solid var(--border);padding-top:14px;margin-top:14px">
+          <div class="pay-sec">
             <h4 style="font-size:14px;margin-bottom:10px">附件（{{ (c.files || []).length }}）</h4>
             <ul class="file-list" v-if="c.files && c.files.length">
               <li v-for="f in c.files" :key="f.id">
                 <span class="fname"><span>{{ f.filename }}</span><span class="fsize">{{ fmtSize(f.size) }}</span></span>
                 <span>
                   <a @click="downloadFile(f)" style="margin-right:12px;cursor:pointer">下载</a>
-                  <a v-if="canManage" style="color:var(--danger);cursor:pointer" @click="delFile(f)">删除</a>
+                  <a v-if="canManage" style="color:var(--bad);cursor:pointer" @click="delFile(f)">删除</a>
                 </span>
               </li>
             </ul>

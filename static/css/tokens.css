@@ -1,0 +1,296 @@
+/* ============================================================================
+   医院信息科日常管理系统 · 设计令牌层（方案 A「值班台」）
+   ----------------------------------------------------------------------------
+   这是全站唯一的事实来源：颜色、字阶、间距、圆角、时长、层级。
+   业务样式一律写在 style.css，且**只引用这里的变量**，不再出现色值字面量。
+
+   为什么单开一个文件而不是塞进 style.css：
+     1) 换主题（含亮/暗变体）只需改这一个文件；
+     2) 新增页面时「该用哪个颜色」有明确答案，不会再各写各的灰；
+     3) 大屏（.scr-wrap）与流量监控（.nf-*）能直接复用同一套语义色，
+        不会出现「大屏是蓝色系、主站是琥珀色」的两套皮。
+
+   加载顺序：本文件必须在 style.css 之前（style.css 依赖这里定义的变量）。
+
+   内网约束（别改坏）：
+     · 服务器在内网、无外网 → 字体只能自托管，不能用 CDN <link>。
+       已落在 static/vendor/fonts/ 下（只一个文件，latin 子集 31KB）；
+       中文一律回落系统字体，所以「字体没加载出来」也只是数字不是等宽，
+       页面不会塌、不会变豆腐块。
+     · 刻意回避 color-mix() / CSS 嵌套 / :has() / 容器查询（老机器上整条规则
+       被丢弃，不是降级）。半透明底色一律写成显式令牌，如 --line / --accent-soft。
+     · 建议基线 Chrome / Edge 100+。
+   ============================================================================ */
+
+/* ---------- 自托管字体（latin 子集；中文一律回落系统字体） ----------
+   ★ 只留一套等宽字。原因很实在：本系统的标题、表头、标签、按钮全是中文，
+     而 Bebas Neue 这类展示体只有拉丁字形 —— 挂上去之后除了零星几个数字和
+     "HIS" 之类的缩写以外什么都不影响，反而让中英数混排的字体不一致。
+     与其为一个「看起来没用上」的效果多背 14KB 和一份授权说明，不如不要。
+     等宽字则相反：IP、MAC、金额、耗时、工单号满屏都是，必须能对齐。 */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/vendor/fonts/jetbrains-mono-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
+    U+FEFF, U+FFFD;
+}
+/* JetBrains Mono 是可变字体，一份文件覆盖 400~700；
+   仍按静态字重声明多次，避免老浏览器不认 `font-weight: 400 700` 这种范围写法。 */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('/vendor/fonts/jetbrains-mono-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
+    U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('/vendor/fonts/jetbrains-mono-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
+    U+FEFF, U+FFFD;
+}
+
+/* ---------- 令牌：暗色为骨（默认） ---------- */
+:root {
+  /* 层级：页背景 → 抬起的面板 → 面板里再抬一层 / 悬停 → 凹陷（进度槽、代码块） */
+  --bg:         #0b0e12;
+  --surface:    #12171e;
+  --surface-2:  #171e27;
+  --surface-3:  #0e131a;
+
+  /* 发丝线：控制室的做法是用 1px 线分层，不用阴影堆叠 */
+  --line:        rgba(160, 186, 214, .16);
+  --line-soft:   rgba(160, 186, 214, .08);
+  --line-strong: rgba(160, 186, 214, .30);
+
+  /* 文字：正文 / 次要 / 更弱（表格头、单位、占位）/ 禁用 */
+  --text:    #e6edf5;
+  --text-2:  #b9c5d4;
+  --muted:   #8a99ac;
+  --quiet:   #74839a;
+  --on-accent: #1a1204;
+
+  /* 强调：单一信号琥珀。全站只有它一个高饱和色，所以「该看哪里」不需要猜 */
+  --accent:      #ffb020;
+  --accent-soft: rgba(255, 176, 32, .14);
+  --accent-line: rgba(255, 176, 32, .45);
+
+  /* 状态（LED 四档）。始终「文字 + 方点」成对出现，颜色只做加强而不是唯一线索 */
+  --ok:        #34d399;
+  --ok-soft:   rgba(52, 211, 153, .12);
+  --ok-line:   rgba(52, 211, 153, .35);
+  --warn:      #fbbf24;
+  --warn-soft: rgba(251, 191, 36, .12);
+  --warn-line: rgba(251, 191, 36, .35);
+  --bad:       #f87171;
+  --bad-soft:  rgba(248, 113, 113, .12);
+  --bad-line:  rgba(248, 113, 113, .40);
+  --info:      #7cc4ff;
+  --info-soft: rgba(124, 196, 255, .12);
+  --info-line: rgba(124, 196, 255, .35);
+  --idle:      var(--quiet);
+
+  /* 形状：3px 圆角 + 发丝边。圆角小是刻意的 —— 密集表格里圆角越大越像「卡片墙」 */
+  --r:    3px;
+  --r-sm: 2px;
+
+  /* 时长：密集控件用 --dur-fast（140ms 才是表格悬停该有的手感），
+     面板入场与顶部扫光用 --dur（320ms），这是这套设计里唯一「慢」的地方 */
+  --dur:      320ms;
+  --dur-fast: 140ms;
+  --ease: cubic-bezier(.16, 1, .3, 1);
+
+  /* 阴影：只为「浮起来」的东西准备（弹窗、灯箱、下拉）。
+     平面内容一律用发丝线分层 —— 暗色主题下阴影几乎看不见，只会平白多一层糊。 */
+  --shadow-pop: 0 24px 70px rgba(0, 0, 0, .60);
+  --scrim:      rgba(5, 8, 12, .72);
+
+  /* 字体 */
+  --font:      "Segoe UI", "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", Consolas, "Courier New", monospace;
+
+  /* 字阶 */
+  --fs-xs:   11px;
+  --fs-sm:   12px;
+  --fs-base: 13.5px;
+  --fs-md:   15px;
+  --fs-lg:   18px;
+  --fs-xl:   26px;
+
+  /* 骨架尺寸 */
+  --rail-w:   236px;
+  --topbar-h: 52px;
+
+  /* 图标笔画：整套线条图标的重量级，换主题只改这一个数 */
+  --icon-stroke: 1.5;
+
+  /* 大屏（.scr-wrap）与内嵌流量监控（.nf-*）专用的固定暗色。
+     ★ 刻意**不随主题切换**：大屏是投到机房电视上的，白底投屏会晃眼，
+       而且这类屏幕默认 24 小时常亮。所以它固定暗底，与主站的亮/暗选择解耦。
+     值取自主站暗色令牌，所以不会有「主站琥珀、大屏蓝」的两套皮。 */
+  --sc-bg:     #0b0e12;
+  --sc-panel:  #12171e;
+  --sc-surface:#171e27;
+  --sc-line:   rgba(160, 186, 214, .16);
+  --sc-line-soft: rgba(160, 186, 214, .08);
+  --sc-text:   #e6edf5;
+  --sc-muted:  #8a99ac;
+  --sc-accent: #ffb020;
+  --sc-ok:     #34d399;
+  --sc-warn:   #fbbf24;
+  --sc-bad:    #f87171;
+  --sc-info:   #7cc4ff;
+}
+
+/* ---------- 令牌：亮色变体 ----------
+   机房电视、投屏、打印、以及白天靠窗的工位用这一套。
+   结构完全不动，只换语义令牌 —— 这就是把色值全写成变量的回报。
+   强调色在亮底上必须压暗：琥珀 #ffb020 压白只有 1.83:1，直接不可读；
+   #96610a 是同时满足「压 #fff 与压页面底 #eef1f5 都 ≥4.5:1」的最小改动。 */
+:root[data-theme="light"] {
+  --bg:         #eef1f5;
+  --surface:    #ffffff;
+  --surface-2:  #f7f9fc;
+  --surface-3:  #e9edf3;
+
+  --line:        rgba(24, 44, 70, .18);
+  --line-soft:   rgba(24, 44, 70, .09);
+  --line-strong: rgba(24, 44, 70, .34);
+
+  --text:    #16202e;
+  --text-2:  #3a4a5e;
+  --muted:   #5d6e83;
+  --quiet:   #5f6c80;
+  --on-accent: #ffffff;
+
+  --accent:      #96610a;
+  --accent-soft: rgba(150, 97, 10, .10);
+  --accent-line: rgba(150, 97, 10, .35);
+
+  --ok:        #0f7a53;
+  --ok-soft:   rgba(15, 122, 83, .10);
+  --ok-line:   rgba(15, 122, 83, .30);
+  --warn:      #92610a;
+  --warn-soft: rgba(146, 97, 10, .10);
+  --warn-line: rgba(146, 97, 10, .30);
+  --bad:       #b3261e;
+  --bad-soft:  rgba(179, 38, 30, .10);
+  --bad-line:  rgba(179, 38, 30, .30);
+  --info:      #1a5fb4;
+  --info-soft: rgba(26, 95, 180, .10);
+  --info-line: rgba(26, 95, 180, .30);
+  --idle:      var(--quiet);
+
+  --shadow-pop: 0 24px 60px rgba(16, 32, 56, .22);
+  --scrim:      rgba(16, 32, 56, .45);
+
+  /* 亮底上的线条图标不需要那么重，否则 1.5px 在细笔画字旁边会显脏 */
+  --icon-stroke: 1.4;
+}
+
+/* ============================================================================
+   全局基线
+   ============================================================================ */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html { height: 100%; }
+
+body {
+  height: 100%;
+  font-family: var(--font);
+  font-size: var(--fs-base);
+  line-height: 1.6;
+  background: var(--bg);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* 等宽数字：业务侧的类（.num / .mono / .dist-cnt / .log-ip …）在 style.css 里逐个接上，
+   这里只兜底通用元素，避免误伤含中文的单元格 */
+code, kbd, samp, pre {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+button { font-family: inherit; }
+input, select, textarea { font-family: inherit; }
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+::selection { background: var(--accent); color: var(--on-accent); }
+
+/* 焦点圈：内网里键盘操作的老师傅不少，默认 outline 不能被消掉 */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* 滚动条：跟随主题，别在暗底上留一条系统灰 */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--accent); background-clip: padding-box; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-corner { background: transparent; }
+
+/* 顶部扫光 + 面板入场。整套设计里唯一的两处「自发」动效 */
+@keyframes his-sweep {
+  0%   { transform: translateX(-60%); }
+  100% { transform: translateX(60%); }
+}
+@keyframes his-rise {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes his-slide-in {
+  from { opacity: 0; transform: translateX(16px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes his-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: .35; }
+}
+
+/* 动效降级：前庭功能敏感的用户、以及远程桌面上，动效都必须能关得干净 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* 打印：值班室经常要把工单/台账打出来贴机柜。
+   侧栏、按钮、筛选栏、分页一律不打印，卡片边框去掉（省墨） */
+@media print {
+  .rail, .topbar, .action-panel, .filter-bar, .cat-bar, .pager, .pagination,
+  .toolbar, .ops, .row-actions, .actions-cell, .toast-wrap, .batch-bar, .seg {
+    display: none !important;
+  }
+  .app { display: block !important; }
+  .main { margin: 0 !important; padding: 0 !important; }
+  body { background: #fff; color: #000; }
+  .card, .panel { border: none !important; box-shadow: none !important; padding: 0 !important; }
+  .tbl th { color: #000; }
+  .tbl td, .tbl th { border-color: #999 !important; }
+}

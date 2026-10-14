@@ -50,6 +50,10 @@ const ENGINEER = { id: 2, username: 'eng', role_id: 2, role_code: 'engineer', pe
   'payments.view', 'payments.manage', 'issues.view', 'issues.create', 'issues.manage',
   'docs.view', 'docs.manage', 'screen.view', 'devices.view',
   'inspection.view', 'inspection.manage', 'netflow.view', 'netflow.manage',
+  // 与 src/perm.js 的 OPERATOR_PERMS 保持一致：两边不一致时，
+  // 会出现「菜单里看得到、点进去全是 403」这种最难解释的现象
+  'bookmarks.view', 'bookmarks.manage', 'bookmarks.secret',
+  'ipam.view', 'ipam.manage',
 ] };
 const NORMAL = { id: 3, username: 'nurse', role_id: 3, role_code: 'user', perms: ['dashboard.view', 'issues.view', 'issues.create'] };
 const EMPTY = { id: 9, username: 'none', role_id: 9, role_code: 'auditor', perms: [] };
@@ -105,6 +109,25 @@ console.log('\n== 动作的满足关系（与后端一致） ==');
   ok(perm.can('contracts.manage') === false, '不跨模块串权');
 }
 
+console.log('\n== 敏感动作：看密码（bookmarks.secret）==');
+{
+  // 前端这份判定决定「书签列表里那个【查看密码】按钮显不显示」。
+  // 与后端必须完全一致：后端用 manage ⊃ secret 拦下来、前端却把按钮画出来，
+  // 用户点一下吃个 403，会以为系统坏了。
+  const { perm } = loadPerm({ id: 8, role_id: 8, role_code: 'x', perms: ['bookmarks.view', 'bookmarks.manage'] });
+  ok(perm.can('bookmarks.secret') === false, '持 manage 时【查看密码】按钮不显示');
+  ok(perm.can('bookmarks.view') === true, '但仍能看书签列表');
+
+  const { perm: ps } = loadPerm({ id: 9, role_id: 9, role_code: 'x', perms: ['bookmarks.secret'] });
+  ok(ps.can('bookmarks.secret') === true, '单独勾「看密码」→ 按钮显示');
+  ok(ps.can('bookmarks.view') === true, '单独勾「看密码」→ 列表也打得开（不会变成有权限却进不去）');
+  ok(ps.can('bookmarks.manage') === false, '单独勾「看密码」→ 不能编辑');
+
+  const { perm: pa } = loadPerm(ENGINEER);
+  ok(pa.can('bookmarks.secret') === true, '工程师默认能看密码');
+  ok(pa.can('ipam.manage') === true, '工程师能维护 IP 管理');
+}
+
 console.log('\n== 空权限角色 ==');
 {
   const { perm } = loadPerm(EMPTY);
@@ -123,6 +146,11 @@ console.log('\n== 未登录 / 老会话兼容 ==');
   const { perm } = loadPerm({ id: 2, username: 'eng', role_id: 2, role_name: '工程师' });
   ok(perm.can('contracts.view') === true, '老会话（工程师）按内置默认放行');
   ok(perm.can('users.manage') === false, '老会话（工程师）仍然看不到用户管理');
+  // 新增模块也要在老会话的兜底清单里，否则升级后工程师会「看不到新菜单」，
+  // 而且因为他的 localStorage 里还没有 perms，菜单会一直空着
+  ok(perm.can('bookmarks.view') === true, '老会话（工程师）能看到网页书签');
+  ok(perm.can('ipam.manage') === true, '老会话（工程师）能维护 IP 管理');
+  ok(perm.can('bookmarks.secret') === true, '老会话（工程师）能看密码（与后端默认矩阵一致）');
   const { perm: p1 } = loadPerm({ id: 1, username: 'admin', role_id: 1 });
   ok(p1.can('users.manage') === true, '老会话（管理员）全权');
   const { perm: p3 } = loadPerm({ id: 3, username: 'nurse', role_id: 3 });

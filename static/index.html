@@ -1,9 +1,27 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="dark">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>医院信息科日常管理系统</title>
+  <meta name="theme-color" content="#0b0e12">
+  <script>
+  /* 主题必须在样式表生效之前定好，否则默认暗色 → 用户偏好亮色时会先闪一帧全白。
+     这段脚本是内联的、放在 <link> 之前，就是为了抢在首次绘制前跑完。 */
+  (function () {
+    try {
+      var t = localStorage.getItem('his_theme');
+      /* 方案 A 的默认是暗色（机房 / 值班 / 巡检场景为主），
+         只认 'light' 与 'dark'，其它值一律回落默认，避免脏数据把主题搞坏 */
+      if (t !== 'light' && t !== 'dark') t = 'dark';
+      document.documentElement.setAttribute('data-theme', t);
+    } catch (e) {
+      /* 隐私模式 / 禁用存储时 localStorage 会直接抛异常。此时保持 HTML 上的
+         默认 data-theme="dark" 即可，不能让主题脚本把整个页面搞崩。 */
+    }
+  })();
+  </script>
+  <link rel="stylesheet" href="/css/tokens.css">
   <link rel="stylesheet" href="/css/style.css">
 </head>
 <body>
@@ -21,6 +39,8 @@
   <script src="/js/netflow-view.js"></script>
   <script src="/js/docs-views.js"></script>
   <script src="/js/perm-view.js"></script>
+  <script src="/js/bookmark-view.js"></script>
+  <script src="/js/ipam-view.js"></script>
   <script src="/js/main.js"></script>
 </body>
 </html>

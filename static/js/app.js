@@ -138,8 +138,8 @@
           <div class="stat-card"><div class="num">{{ cd ? cd.total : '-' }}</div><div class="lbl">合同总数</div><div class="bar bar-blue"></div></div>
           <div class="stat-card"><div class="num">{{ cd ? cd.active : '-' }}</div><div class="lbl">进行中</div><div class="bar bar-amber"></div></div>
           <div class="stat-card"><div class="num">￥{{ cd ? fmtMoney(cd.totalAmount) : '-' }}</div><div class="lbl">合同总额</div><div class="bar bar-blue"></div></div>
-          <div class="stat-card"><div class="num" style="color:#16a34a">￥{{ cd ? fmtMoney(cd.paidAmount) : '-' }}</div><div class="lbl">已付款</div><div class="bar bar-green"></div></div>
-          <div class="stat-card"><div class="num" style="color:var(--danger)">￥{{ cd ? fmtMoney(cd.unpaidAmount) : '-' }}</div><div class="lbl">未付款</div><div class="bar bar-red"></div></div>
+          <div class="stat-card"><div class="num" style="color:var(--ok)">￥{{ cd ? fmtMoney(cd.paidAmount) : '-' }}</div><div class="lbl">已付款</div><div class="bar bar-green"></div></div>
+          <div class="stat-card"><div class="num" style="color:var(--bad)">￥{{ cd ? fmtMoney(cd.unpaidAmount) : '-' }}</div><div class="lbl">未付款</div><div class="bar bar-red"></div></div>
           <div class="stat-card warn"><div class="num">{{ cd ? (cd.overdue + cd.expiring) : '-' }}</div><div class="lbl">30天内到期/已过期</div><div class="bar bar-amber"></div></div>
         </div>
         <div class="detail-grid">
@@ -147,11 +147,12 @@
             <div class="card">
               <div class="card-title">近 12 个月新增合同</div>
               <div v-if="!cd || !cd.monthly || !cd.monthly.length" class="file-empty">暂无数据</div>
-              <div v-else style="display:flex;align-items:flex-end;gap:6px;height:150px;overflow-x:auto">
-                <div v-for="m in cd.monthly" :key="m.ym" style="text-align:center;min-width:48px">
-                  <div style="font-size:11px;color:#475569;margin-bottom:3px">{{ m.c }}</div>
-                  <div :style="{height:Math.max(2,(m.c / cMonthlyMax * 110))+'px',background:'#2563eb',borderRadius:'3px 3px 0 0'}"></div>
-                  <div style="font-size:10px;color:#94a3b8;margin-top:3px">{{ m.ym.slice(2) }}</div>
+              <div v-else class="mbars">
+                <div v-for="m in cd.monthly" :key="m.ym" class="mbar-col"
+                     :title="m.ym + ' 新增 ' + m.c + ' 份'">
+                  <div class="mbar-num">{{ m.c }}</div>
+                  <div class="mbar" :style="{ height: Math.max(2, (m.c / cMonthlyMax * 110)) + 'px' }"></div>
+                  <div class="mbar-x">{{ m.ym.slice(2) }}</div>
                 </div>
               </div>
             </div>
@@ -261,7 +262,8 @@
         return Math.max(3, Math.round((c / max) * 100)) + '%';
       },
       ucolor(u) {
-        return { 低: '#94a3b8', 中: '#0e7490', 高: '#d97706', 紧急: '#dc2626' }[u] || '#1f6de8';
+        /* 紧急程度配色走令牌：暗色主题下这四个浅色会亮得刺眼、且与状态标签不一致 */
+        return { 低: 'var(--quiet)', 中: 'var(--info)', 高: 'var(--warn)', 紧急: 'var(--bad)' }[u] || 'var(--accent)';
       },
       goIssue(id) { location.hash = '#/issue/' + id; },
       goRemind() { location.hash = '#/remind'; },
@@ -335,7 +337,7 @@
         <button class="cat-btn" v-for="c in mods.categories" :key="c" :class="{active: f.category === c}" @click="setCat(c)">{{ c }}</button>
       </div>
       <div class="batch-bar card" v-if="canBatch" style="padding:12px 16px;margin-bottom:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-        <span style="font-size:13px;color:var(--text)">已选 <b>{{ selectedIds.length }}</b> 条</span>
+        <span class="muted" style="color:var(--text)">已选 <b>{{ selectedIds.length }}</b> 条</span>
         <select v-model="batchStatus" style="min-width:110px">
           <option value="">选择目标状态…</option>
           <option value="processing">→ 处理中</option>
@@ -343,7 +345,7 @@
           <option value="closed">→ 已关闭</option>
           <option value="pending">→ 待处理（退回/重开）</option>
         </select>
-        <input v-model="batchNote" placeholder="批量备注（可选，写入每条处理流程）" style="flex:1;min-width:180px;padding:8px 10px;border:1px solid var(--border);border-radius:8px">
+        <input v-model="batchNote" placeholder="批量备注（可选，写入每条处理流程）" style="flex:1;min-width:180px">
         <button class="btn btn-primary btn-sm" :disabled="!selectedIds.length || !batchStatus || batchSaving" @click="doBatch">{{ batchSaving ? '提交中…' : '批量修改状态' }}</button>
         <button class="btn btn-ghost btn-sm" @click="clearSel">取消选择</button>
       </div>
@@ -397,7 +399,7 @@
         <div class="modal" style="width:520px">
           <div class="modal-head"><h3>Excel 导入</h3><span class="x" @click="importOpen=false">✕</span></div>
           <div class="modal-body">
-            <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:12px 14px;margin-bottom:14px;font-size:13px;color:#1e40af">
+            <div class="imp-note">
               第一次使用？请先 <a @click="downloadTemplate" style="cursor:pointer;text-decoration:underline;font-weight:600">下载导入模板</a>
               ，按模板列填写后上传。重复的问题（单号已存在或同记录日期同标题）会自动跳过，不会重复导入。
             </div>
@@ -413,7 +415,7 @@
                 <table class="tbl">
                   <thead><tr><th>行号</th><th>标题</th><th>结果</th></tr></thead>
                   <tbody>
-                    <tr v-for="f in importResult.failed" :key="'f'+f.row+String(f.title)"><td>{{ f.row }}</td><td>{{ f.title || '-' }}</td><td style="color:var(--danger)">失败：{{ f.reason }}</td></tr>
+                    <tr v-for="f in importResult.failed" :key="'f'+f.row+String(f.title)"><td>{{ f.row }}</td><td>{{ f.title || '-' }}</td><td style="color:var(--bad)">失败：{{ f.reason }}</td></tr>
                     <tr v-for="s in importResult.skipped" :key="'s'+s.row+String(s.title)"><td>{{ s.row }}</td><td>{{ s.title }}</td><td class="muted">跳过：{{ s.reason }}</td></tr>
                   </tbody>
                 </table>
@@ -598,7 +600,7 @@
               <div class="tl-item" v-for="(l, i) in d.logs" :key="l.id" :class="{ 'tl-main': i === d.logs.length - 1 }">
                 <div class="tl-dot"></div>
                 <div class="tl-head">{{ l.action }}
-                  <span v-if="l.from_status && l.to_status" style="font-weight:400;color:var(--gray)">
+                  <span v-if="l.from_status && l.to_status" style="font-weight:400;color:var(--muted)">
                     （{{ STATUS[l.from_status] }} → {{ STATUS[l.to_status] }}）
                   </span>
                 </div>
@@ -659,7 +661,7 @@
                 <video v-else-if="previewing.preview_kind === 'video' && previewing.preview_supported !== false" :src="previewUrl" controls autoplay class="lb-video"></video>
                 <div v-else-if="previewing.preview_kind === 'video'" class="lb-unsupported lb-video-warn">
                   <div style="font-size:30px;margin-bottom:10px">🎬</div>
-                  <div style="font-size:15px;font-weight:600;color:#b45309">该视频为 H.265 (HEVC) 编码，浏览器无法直接预览</div>
+                  <div style="font-size:15px;font-weight:600;color:var(--warn)">该视频为 H.265 (HEVC) 编码，浏览器无法直接预览</div>
                   <div style="margin-top:8px;font-size:13px">请点击右上角「下载」按钮，用系统播放器（如 PotPlayer / VLC / 视频播放器）打开查看</div>
                 </div>
                 <div v-else-if="previewing.preview_kind === 'docx'" class="lb-docx-wrap"><div ref="docxBox" class="lb-docx"></div></div>
@@ -690,7 +692,7 @@
               <button v-if="canManage" class="btn btn-danger" @click="removeIssue">删除问题</button>
             </div>
           </div>
-          <div class="card" style="font-size:12px;color:var(--gray)">
+          <div class="card muted" style="font-size:12px">
             <div>创建：{{ fmt(d.issue.created_at) }}</div>
             <div style="margin-top:4px">最后更新：{{ fmt(d.issue.updated_at) }}</div>
             <div v-if="d.issue.closed_at" style="margin-top:4px">关闭时间：{{ fmt(d.issue.closed_at) }}</div>
