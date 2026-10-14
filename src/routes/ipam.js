@@ -98,6 +98,20 @@ router.get('/segments/:id/free', (req, res) => {
   }
 });
 
+// GET /api/ipam/segments/:id/map —— 地址分布图所需的格子
+// 只读接口，与 /free 同级权限即可（guardModule 已保证 ipam.view）。
+// 返回的 cells 是可以直接渲染的成品：state 用 STATUS 的 code（另加 net / bcast
+// 两个「不可登记」的边角），前端不需要懂 CIDR、也不需要做 32 位运算。
+router.get('/segments/:id/map', (req, res) => {
+  try {
+    const r = repo.segmentMap(req.params.id);
+    if (!r.ok) return fail(res, r);
+    res.json({ code: 0, data: r });
+  } catch (e) {
+    res.status(500).json({ code: 500, message: '生成地址分布失败：' + ((e && e.message) || e) });
+  }
+});
+
 /* ==================== IP 登记 ==================== */
 
 // GET /api/ipam/ips —— 登记列表（网段 / 状态 / 关键词 / 分页）

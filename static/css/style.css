@@ -3099,3 +3099,116 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-base); }
 }
 /* 不在本网段的地址单独标红：粘贴 200 行时，这是最需要一眼看见的那几个 */
 .bulk-chips span.outside { border-color: var(--bad-line); color: var(--bad); }
+
+/* ---------- IP 管理：地址分布图 ----------
+   表格回答「这个地址给了谁」，图回答「这一段还剩多少、哪里快满」。
+   配色沿用全站状态语义（蓝=已用 / 琥珀=保留 / 红=冲突 / 灰=空闲），
+   所以不必重新学一套颜色；换句话说，图里出现的每种颜色在表格里都见得到。 */
+
+/* 各网段使用率对比条 */
+.ipmap-bars { display: flex; flex-direction: column; gap: 8px; }
+.ipmap-bar-row {
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr) 58px 104px;
+  align-items: center;
+  gap: 10px;
+  padding: 2px 4px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+.ipmap-bar-row:hover { background: var(--surface-2); }
+.ipmap-bar-name {
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ipmap-bar-track {
+  height: 10px;
+  background: var(--surface-3);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm);
+  overflow: hidden;
+}
+/* 里面那层直接用 .ip-fill / .mid / .high，与网段表里的进度条同一套三档色 */
+.ipmap-bar-pct {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  text-align: right;
+}
+.ipmap-bar-pct.hot { color: var(--bad); font-weight: 700; }
+.ipmap-bar-num {
+  font-size: var(--fs-xs);
+  color: var(--quiet);
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* 图例：颜色只是加强，文字说明永远在（黑白打印、色盲都能读） */
+.ipmap-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line-soft);
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
+.ipmap-key { display: inline-flex; align-items: center; gap: 6px; }
+.ipmap-key i {
+  width: 12px;
+  height: 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm);
+  background: var(--surface-3);
+}
+/* 空闲档把上面的默认值显式写一遍：图例是「四档并列」的东西，
+   写全了才不会被后来改上面那条通用规则的人顺手改歪 */
+.ipmap-key i.k-free     { background: var(--surface-3); border-color: var(--line-soft); }
+.ipmap-key i.k-used     { background: var(--info-soft); border-color: var(--info-line); }
+.ipmap-key i.k-reserved { background: var(--warn-soft); border-color: var(--warn-line); }
+.ipmap-key i.k-conflict { background: var(--bad-soft);  border-color: var(--bad-line); }
+.ipmap-key i.k-net      { background: transparent; border-style: dashed; border-color: var(--line); }
+
+/* 地址网格。16 列是刻意的：IPv4 最后一段 0-255 正好 16 行 16 列，
+   于是「.16 在第二行第一格」这种心算成立，横向扫一行就是 16 个连续地址。 */
+.ipmap-grid {
+  display: grid;
+  gap: 3px;
+  max-width: 760px;
+}
+.ipmap-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 24px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--quiet);
+  background: var(--surface-3);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm);
+  cursor: default;
+  user-select: none;
+}
+.ipmap-cell.reg { cursor: pointer; }
+.ipmap-cell:hover { border-color: var(--line-strong); }
+.ipmap-cell.st-used     { background: var(--info-soft); border-color: var(--info-line); color: var(--info); }
+.ipmap-cell.st-reserved { background: var(--warn-soft); border-color: var(--warn-line); color: var(--warn); }
+.ipmap-cell.st-conflict { background: var(--bad-soft);  border-color: var(--bad-line);  color: var(--bad); }
+/* 网络 / 广播地址不参与登记，用「虚线空框」与「空闲的实线灰格」区分开 ——
+   不然看图上 .0 和 .1 长得一样，会以为第一个地址也能用 */
+.ipmap-cell.st-net,
+.ipmap-cell.st-bcast {
+  background: transparent;
+  border-style: dashed;
+  border-color: var(--line);
+  color: var(--quiet);
+}
+/* 上千格（/16 那种聚合成 256+ 块）时不存在格内文字，格子缩到最小，
+   否则一屏看不到几行，反而失去了「一眼看全」的意义 */
+.ipmap-grid.dense { gap: 2px; max-width: 100%; }
+.ipmap-grid.dense .ipmap-cell { height: 14px; }

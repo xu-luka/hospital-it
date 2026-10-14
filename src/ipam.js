@@ -590,7 +590,7 @@ function removeIp(id) {
 /** 某网段还空着的地址（顺序取前 limit 个） */
 function freeIpsOfSegment(segmentId, limit) {
   const seg = getSegment(segmentId);
-  if (!seg) return { ok: false, error: '网段不存在' };
+  if (!seg) return { ok: false, error: '网段不存在', notFound: true };
   const c = parseCidr(seg.cidr);
   if (!c) return { ok: false, error: '该网段的 CIDR 无法解析：' + seg.cidr };
   const used = usedSetOf(seg.id);
@@ -604,6 +604,151 @@ function freeIpsOfSegment(segmentId, limit) {
     ips: list,
     truncated: list.length < Math.max(0, c.hostCount - used.size),
   };
+}
+
+/* ==================== 图形化：地址分布图 ====================
+ *
+ * 把「一个网段里哪些地址被占了」铺成格子交给前端画。
+ * 为什么算在服务端而不是前端：
+ *   · 32 位整数进位（n + 1 到 0xFFFFFFFF 会溢出）、网络/广播地址的归属、
+ *     /31 与 /32 不扣首尾——这些边界已经在本文件的纯函数里测过了，前端再写一遍
+ *     必然出现「两边不一致」，而且前端写错只会表现成「图看着怪」；
+ *   · 一次算完，前端拿到的就是可以直接 v-for 的数组，不需要它懂 CIDR。 */
+
+// 逐地址网格的上限：/22 = 1024 格（16 列 × 64 行）。再大就不是「一眼看清」而是刷屏。
+const MAP_IP_MAX = 1024;
+// 按 /24 聚合时最多铺多少块：/12 是 4096 块，再往下就只剩一堵没有信息的墙。
+const MAP_BLOCK_MAX = 4096;
+// 单次最多读多少条登记：防止某个 /8 网段里塞了几万条把内存和响应打爆。
+const MAP_ROWS_MAX = 20000;
+// 格子固定按 16 列排：IPv4 最后一段 0-255 正好 16 行 16 列，与「.10 在第 2 行第 11 格」
+// 这种心算习惯对得上（小于 16 个地址的小网段退化成 size 列，见下）。
+const MAP_COLS = 16;
+
+function segmentMap(segmentId, opts) {
+  const seg = getSegment(segmentId);
+  // notFound 让路由回 404 而不是笼统的 400：网段不存在是「你找的东西没有」，
+  // 不是「你传的参数不对」。freeIpsOfSegment 之前漏了这个标记，一并补上。
+  if (!seg) return { ok: false, error: '网段不存在', notFound: true };
+  const c = parseCidr(seg.cidr);
+  if (!c) return { ok: false, error: '该网段的 CIDR 无法解析：' + seg.cidr };
+
+  const totalRows = db.prepare('SELECT COUNT(*) c FROM ip_records WHERE segment_id = ?')
+    .get(Number(seg.id)).c;
+  const rows = db.prepare(
+    `SELECT ip, status, hostname, owner, device_type, note
+     FROM ip_records WHERE segment_id = ? ORDER BY ip_num ASC, id ASC LIMIT ?`
+  ).all(Number(seg.id), MAP_ROWS_MAX);
+
+  // 同一个网段里不允许重复登记（有唯一索引），这里再兜一层是防止历史数据绕过索引写入
+  const byIp = {};
+  rows.forEach((r) => {
+    const k = String(r.ip);
+    if (!byIp[k]) byIp[k] = r;
+  });
+
+  const info = shapeSegment(seg, segmentStats()[String(seg.id)]);
+  const base = {
+    ok: true,
+    id: seg.id,
+    name: info.name,
+    cidr: info.cidr,
+    cols: MAP_COLS,
+    host_count: info.host_count,
+    registered: info.registered,
+    used: info.used,
+    conflict: info.conflict,
+    free_count: info.free_count,
+    truncated: Number(totalRows) > rows.length,
+  };
+
+  /* ---- 模式一：逐地址网格（/22 及更小） ---- */
+  if (c.hostCount <= MAP_IP_MAX) {
+    // 小网段（/29 只有 8 个地址）用 16 列会排出一行大部分是空白，
+    // 所以列数取「16 与该网段地址数的较小者」；size 一定是 2 的幂，
+    // 于是 /28 及以上都是 16 的整数倍，行首自然对齐到 .0 / .16 / .32…
+    const size = Math.pow(2, 32 - c.prefix);
+    const cols = Math.max(1, Math.min(MAP_COLS, size));
+    const cells = [];
+    let n = c.network;
+    for (;;) {
+      const ip = formatIp(n);
+      const rec = byIp[ip];
+      const isEdge = c.prefix <= 30 && (n === c.network || n === c.broadcast);
+      let state = 'free';
+      let tip = ip + ' · 未登记';
+      if (rec) {
+        state = String(rec.status || 'used');
+        tip = ip + ' · ' + statusLabel(rec.status);
+        if (rec.hostname) tip += ' · ' + rec.hostname;
+        if (rec.owner) tip += ' · ' + rec.owner;
+        if (rec.device_type) tip += ' · ' + rec.device_type;
+        if (rec.note) tip += ' · ' + rec.note;
+      } else if (isEdge) {
+        const edge = n === c.network ? '网络地址' : '广播地址';
+        state = n === c.network ? 'net' : 'bcast';
+        tip = ip + ' · ' + edge + '（不参与登记）';
+      }
+      cells.push({ ip, label: String(n & 255), state, reg: !!rec, tip });
+      if (n === c.broadcast) break; // 先判后加，避免 0xFFFFFFFF 进位回绕成 0
+      n = (n + 1) >>> 0;
+    }
+    return Object.assign(base, { mode: 'ip', cols, cells });
+  }
+
+  /* ---- 模式二：按 /24 聚合（/21 ~ /12） ---- */
+  const blocks = Math.pow(2, 24 - c.prefix);
+  if (blocks <= MAP_BLOCK_MAX) {
+    const agg = [];
+    for (let i = 0; i < blocks; i++) agg.push({ registered: 0, used: 0, conflict: 0 });
+    rows.forEach((r) => {
+      const n = parseIp(r.ip);
+      if (n === null) return;
+      const idx = Math.floor((n - c.network) / 256);
+      if (idx < 0 || idx >= blocks) return;
+      agg[idx].registered++;
+      if (r.status === 'used') agg[idx].used++;
+      if (r.status === 'conflict') agg[idx].conflict++;
+    });
+
+    // 块数多到格子放不下数字时就不写字，只留颜色（悬停仍有完整信息）
+    const showCount = blocks <= 256;
+    const cells = agg.map((a, i) => {
+      const net = formatIp((c.network + i * 256) >>> 0);
+      const cidr = net + '/24';
+      let state = 'free';
+      if (a.conflict > 0) state = 'conflict';
+      else if (a.registered > 0) state = 'used';
+      let tip = cidr + ' · 已登记 ' + a.registered + ' / 256';
+      if (a.used) tip += '（已使用 ' + a.used + '）';
+      if (a.conflict) tip += ' · 冲突 ' + a.conflict;
+      return {
+        ip: cidr,
+        // 格内写「这个 /24 里登记了几条」而不是第三段：块数一多，
+        // 「哪一块在涨」比「这是哪一块」更值得一眼看到，后者交给悬停。
+        label: showCount ? String(a.registered) : '',
+        state,
+        reg: a.registered > 0,
+        registered: a.registered,
+        used: a.used,
+        conflict: a.conflict,
+        tip,
+      };
+    });
+    return Object.assign(base, {
+      mode: 'block', cols: MAP_COLS, cells, blocks,
+    });
+  }
+
+  /* ---- 模式三：太大，只给结论不给图 ---- */
+  return Object.assign(base, {
+    mode: 'none',
+    cols: MAP_COLS,
+    cells: [],
+    note: '该网段是 ' + info.cidr + '，有 ' + c.hostCount + ' 个可用地址，'
+      + '铺成格子只会是一堵没有信息的墙，所以这里只显示上方的使用率。'
+      + '想看图，可以按科室/楼层另建更小的网段（/22 以内能逐地址展示，/24 最合适）再登记。',
+  });
 }
 
 /**
@@ -647,5 +792,6 @@ module.exports = {
   parseIp, formatIp, parseCidr, normalizeCidr, ipInCidr, rangesOverlap, freeIps, parseBulk,
   listSegments, getSegment, createSegment, updateSegment, removeSegment,
   listIps, createIp, updateIp, removeIp, freeIpsOfSegment, bulkCreate,
+  segmentMap, MAP_IP_MAX, MAP_BLOCK_MAX, MAP_ROWS_MAX, MAP_COLS,
   shapeSegment, shapeRecord, ensureColumns,
 };

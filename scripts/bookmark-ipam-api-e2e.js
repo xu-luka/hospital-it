@@ -245,6 +245,36 @@ function eq(tag, a, b) {
   const big = segs2.json.data.list.filter((x) => x.name === '全院')[0];
   ok('网段列表标出了重叠', big.overlaps.length >= 1, JSON.stringify(big.overlaps));
 
+  console.log('\n== IP 管理：地址分布图（/segments/:id/map） ==');
+  const mseg = await call('admin', 'POST', '/api/ipam/segments', { name: '分布图测试', cidr: '10.88.0.0/24' });
+  const mId = mseg.json.data.id;
+  await call('admin', 'POST', '/api/ipam/ips', { segment_id: mId, ip: '10.88.0.7', hostname: '图-自助机' });
+  await call('admin', 'POST', '/api/ipam/ips', { segment_id: mId, ip: '10.88.0.200', status: 'conflict' });
+
+  const mp = await call('admin', 'GET', '/api/ipam/segments/' + mId + '/map');
+  eq('取分布图 → 200', mp.status, 200);
+  eq('模式 = 逐地址', mp.json.data.mode, 'ip');
+  eq('16 列', mp.json.data.cols, 16);
+  eq('铺满 256 格（网络地址到广播地址）', mp.json.data.cells.length, 256);
+  eq('第 1 格是网络地址，不是可用的空闲格',
+    mp.json.data.cells[0].ip + '/' + mp.json.data.cells[0].state, '10.88.0.0/net');
+  eq('最后一格是广播地址', mp.json.data.cells[255].state, 'bcast');
+  eq('第 8 格（.7）是已使用且格内写 7',
+    mp.json.data.cells[7].state + '/' + mp.json.data.cells[7].label, 'used/7');
+  ok('已登记格悬停带上主机名', /图-自助机/.test(mp.json.data.cells[7].tip), mp.json.data.cells[7].tip);
+  eq('冲突格单独标色', mp.json.data.cells[200].state, 'conflict');
+  eq('未登记的格是空闲', mp.json.data.cells[1].state, 'free');
+  eq('统计与网段表口径一致：已登记 2', mp.json.data.registered, 2);
+
+  const bigMap = await call('admin', 'GET', '/api/ipam/segments/' + s2.json.data.id + '/map');
+  eq('大网段（/16）→ 按 /24 聚合', bigMap.json.data.mode, 'block');
+  eq('聚合成 256 块', bigMap.json.data.cells.length, 256);
+  ok('聚合格悬停能问出是哪一段 /24', /\/24/.test(bigMap.json.data.cells[0].tip), bigMap.json.data.cells[0].tip);
+
+  eq('不存在的网段取图 → 404', (await call('admin', 'GET', '/api/ipam/segments/99999/map')).status, 404);
+  eq('只读角色也能看图（读权限足够）→ 200',
+    (await call('viewer', 'GET', '/api/ipam/segments/' + mId + '/map')).status, 200);
+
   console.log('\n== 只读角色：能看到列表、看不到密码、改不了 ==');
   eq('只读角色读 IP 列表 → 200', (await call('viewer', 'GET', '/api/ipam/ips')).status, 200);
   eq('只读角色读网段 → 200', (await call('viewer', 'GET', '/api/ipam/segments')).status, 200);

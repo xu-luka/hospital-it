@@ -342,6 +342,153 @@ ok('状态字典与中文名', () => {
   eq(ipam.statusLabel('不存在'), '不存在', '未知状态原样回显，不编一个中文名');
 });
 
+/* ==================== 13. 地址分布图（segmentMap） ====================
+ * 图形化的东西最容易「看着对就行」，所以这里钉的不是像素而是**格子的语义**：
+ * 第几格对应哪个地址、边角两格算不算可用、跨 /24 时最后一段是否重新从 0 开始。
+ * 这些错了图照样能画出来，只是画的是另一件事。 */
+
+ok('segmentMap /24 → 逐地址网格，网络与广播单独成格', () => {
+  const s = ipam.createSegment({ name: '分布图段', cidr: '172.31.1.0/24' });
+  ipam.createIp({ segment_id: s.id, ip: '172.31.1.10', status: 'used', hostname: '自助机1' });
+  ipam.createIp({ segment_id: s.id, ip: '172.31.1.200', status: 'conflict' });
+  ipam.createIp({ segment_id: s.id, ip: '172.31.1.55', status: 'reserved' });
+  const m = ipam.segmentMap(s.id);
+
+  eq(m.mode, 'ip');
+  eq(m.cols, 16);
+  eq(m.cells.length, 256, '网络地址到广播地址全铺');
+  eq(m.cells[0].ip, '172.31.1.0');
+  eq(m.cells[0].label, '0');
+  eq(m.cells[0].state, 'net', '网络地址不该被当成空闲可用');
+  eq(m.cells[255].ip, '172.31.1.255');
+  eq(m.cells[255].state, 'bcast');
+  eq(m.cells[1].state, 'free');
+  eq(m.cells[1].reg, false);
+  eq(m.cells[10].state, 'used');
+  eq(m.cells[10].label, '10');
+  eq(m.cells[10].reg, true);
+  assert.ok(m.cells[10].tip.indexOf('自助机1') >= 0, '悬停要带上主机名');
+  eq(m.cells[55].state, 'reserved');
+  eq(m.cells[200].state, 'conflict');
+  eq(m.registered, 3);
+  eq(m.used, 1);
+  eq(m.conflict, 1);
+  eq(m.free_count, 251);
+});
+
+ok('segmentMap 16 列排布可心算：第 17 格是 .16', () => {
+  const s = ipam.listSegments().list.filter((x) => x.cidr === '172.31.1.0/24')[0];
+  const m = ipam.segmentMap(s.id);
+  eq(m.cells[16].label, '16');
+  eq(m.cells[16].ip, '172.31.1.16');
+});
+
+ok('segmentMap 小网段列数跟着缩，不排出一行空白', () => {
+  const a = ipam.createSegment({ name: '小1', cidr: '172.31.2.0/28' });
+  const m28 = ipam.segmentMap(a.id);
+  eq(m28.cells.length, 16);
+  eq(m28.cols, 16);
+  eq(m28.cells[0].ip, '172.31.2.0');
+
+  const b = ipam.createSegment({ name: '小2', cidr: '172.31.3.0/29' });
+  const m29 = ipam.segmentMap(b.id);
+  eq(m29.cells.length, 8);
+  eq(m29.cols, 8, '/29 只有 8 个地址，用 8 列正好一行');
+
+  const d = ipam.createSegment({ name: '单主机', cidr: '172.31.4.1/32' });
+  const m32 = ipam.segmentMap(d.id);
+  eq(m32.cells.length, 1);
+  eq(m32.cols, 1);
+  eq(m32.cells[0].state, 'free', '/32 不扣首尾，唯一那个地址就是可用主机');
+});
+
+ok('segmentMap /31 两个地址都算可用，不当成网络/广播', () => {
+  const s = ipam.createSegment({ name: '点对点', cidr: '172.31.6.0/31' });
+  const m = ipam.segmentMap(s.id);
+  eq(m.cells.length, 2);
+  eq(m.cells[0].state, 'free');
+  eq(m.cells[1].state, 'free');
+  eq(m.host_count, 2);
+});
+
+ok('segmentMap 255.255.255.252/30 走到末位不会进位回绕成 0', () => {
+  const s = ipam.createSegment({ name: '末尾段', cidr: '255.255.255.252/30' });
+  const m = ipam.segmentMap(s.id);
+  eq(m.cells.length, 4);
+  eq(m.cells[0].ip, '255.255.255.252');
+  eq(m.cells[0].state, 'net');
+  eq(m.cells[3].ip, '255.255.255.255');
+  eq(m.cells[3].state, 'bcast');
+});
+
+ok('segmentMap /23（512 格）仍是逐地址网格，跨段后最后一段重新从 0 开始', () => {
+  const s = ipam.createSegment({ name: '两个C', cidr: '172.30.0.0/23' });
+  const m = ipam.segmentMap(s.id);
+  eq(m.mode, 'ip');
+  eq(m.cells.length, 512);
+  eq(m.cells[0].ip, '172.30.0.0');
+  eq(m.cells[256].ip, '172.30.1.0');
+  eq(m.cells[256].label, '0');
+  eq(m.cells[511].state, 'bcast');
+});
+
+ok('segmentMap /21 超过 1024 格 → 按 /24 聚合成 8 块', () => {
+  const s = ipam.createSegment({ name: '聚合段', cidr: '172.29.0.0/21' });
+  ipam.createIp({ segment_id: s.id, ip: '172.29.0.5', status: 'used' });
+  ipam.createIp({ segment_id: s.id, ip: '172.29.0.6', status: 'used' });
+  ipam.createIp({ segment_id: s.id, ip: '172.29.3.7', status: 'conflict' });
+  const m = ipam.segmentMap(s.id);
+
+  eq(m.mode, 'block');
+  eq(m.blocks, 8);
+  eq(m.cells.length, 8);
+  eq(m.cells[0].ip, '172.29.0.0/24');
+  eq(m.cells[0].registered, 2, '前两条应落在第一个 /24');
+  eq(m.cells[0].used, 2);
+  eq(m.cells[0].label, '2', '块数不多时格内直接写登记条数');
+  eq(m.cells[1].state, 'free');
+  eq(m.cells[1].label, '0');
+  eq(m.cells[3].ip, '172.29.3.0/24');
+  eq(m.cells[3].registered, 1);
+  eq(m.cells[3].state, 'conflict');
+  assert.ok(m.cells[3].tip.indexOf('172.29.3.0/24') >= 0, '聚合格必须能悬停问出是哪一段');
+});
+
+ok('segmentMap /16 每格一个 /24，共 256 格且顺序与地址一致', () => {
+  const s = ipam.createSegment({ name: '大院内网', cidr: '172.28.0.0/16' });
+  ipam.createIp({ segment_id: s.id, ip: '172.28.7.9', status: 'used' });
+  const m = ipam.segmentMap(s.id);
+  eq(m.mode, 'block');
+  eq(m.blocks, 256);
+  eq(m.cells.length, 256);
+  eq(m.cells[0].ip, '172.28.0.0/24');
+  eq(m.cells[7].ip, '172.28.7.0/24', '第 8 格必须是 172.28.7.0/24，不能错位');
+  eq(m.cells[7].registered, 1);
+});
+
+ok('segmentMap 太大（/8）只给结论不给图', () => {
+  const s = ipam.createSegment({ name: '超大', cidr: '10.0.0.0/8' });
+  const m = ipam.segmentMap(s.id);
+  eq(m.mode, 'none');
+  eq(m.cells.length, 0);
+  assert.ok(m.note.indexOf('10.0.0.0/8') >= 0, '提示里要写明是哪个网段');
+  eq(m.host_count, 16777214);
+});
+
+ok('segmentMap 网段不存在 → 明确报错，而不是返回一张空图', () => {
+  eq(ipam.segmentMap(99999).ok, false);
+  assert.ok(/不存在/.test(ipam.segmentMap(99999).error));
+  eq(ipam.segmentMap(99999).notFound, true, '要带 notFound，路由才会回 404 而不是 400');
+});
+
+ok('segmentMap 不返回明文没用的字段，只给画图要用的', () => {
+  const s = ipam.listSegments().list.filter((x) => x.cidr === '172.31.1.0/24')[0];
+  const m = ipam.segmentMap(s.id);
+  eq(typeof m.truncated, 'boolean');
+  const keys = Object.keys(m.cells[10]).sort().join(',');
+  eq(keys, 'ip,label,reg,state,tip');
+});
+
 /* ==================== 汇总 ==================== */
 console.log('ipam-selftest：通过 ' + pass + ' / 失败 ' + fails.length);
 if (fails.length) {

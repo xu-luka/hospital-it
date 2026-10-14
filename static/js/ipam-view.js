@@ -62,6 +62,7 @@
         <div class="seg">
           <button class="seg-btn" :class="{ on: tab === 'seg' }" @click="tab = 'seg'">网段（{{ segs.length }}）</button>
           <button class="seg-btn" :class="{ on: tab === 'ip' }" @click="tab = 'ip'; loadIps()">IP 登记（{{ ipTotal }}）</button>
+          <button class="seg-btn" :class="{ on: tab === 'map' }" @click="tab = 'map'; loadMap()">地址分布图</button>
         </div>
         <div class="grow"></div>
         <button class="btn btn-outline" @click="refreshAll">刷新</button>
@@ -212,6 +213,72 @@
           <span class="muted">第 {{ page }} / {{ pageCount }} 页</span>
           <button class="btn btn-sm btn-outline" :disabled="page <= 1" @click="goto(page - 1)">上一页</button>
           <button class="btn btn-sm btn-outline" :disabled="page >= pageCount" @click="goto(page + 1)">下一页</button>
+        </div>
+      </div>
+
+      <!-- ============ 地址分布图 ============ -->
+      <!-- 表格回答「这个地址给了谁」，图回答「这一段还剩多少、哪里快满」。
+           两块信息互补，所以是第三个页签而不是塞进上面两张表。 -->
+      <div v-show="tab === 'map'">
+        <div class="card">
+          <div class="card-title">
+            <span>各网段使用率</span>
+            <span class="muted">按「已使用」条数 ÷ 该网段可用地址数</span>
+          </div>
+          <div v-if="!segs.length" class="muted">还没有网段，先到「网段」页签建一个。</div>
+          <div v-else class="ipmap-bars">
+            <div v-for="s in segs" :key="s.id" class="ipmap-bar-row" @click="jumpSeg(s)">
+              <span class="ipmap-bar-name" :title="s.name + '（' + s.cidr + '）'">{{ s.name }}</span>
+              <span class="ipmap-bar-track"><i :class="usageClass(s)" :style="usageStyle(s)"></i></span>
+              <span class="ipmap-bar-pct" :class="{ hot: pct(s) >= 90 }">{{ pct(s) }}%</span>
+              <span class="ipmap-bar-num mono">{{ s.used }} / {{ s.host_count }}</span>
+            </div>
+          </div>
+          <div class="ipmap-legend">
+            <span class="ipmap-key"><i class="k-free"></i>空闲（未登记）</span>
+            <span class="ipmap-key"><i class="k-used"></i>已使用</span>
+            <span class="ipmap-key"><i class="k-reserved"></i>保留</span>
+            <span class="ipmap-key"><i class="k-conflict"></i>冲突</span>
+            <span class="ipmap-key"><i class="k-net"></i>网络 / 广播地址</span>
+          </div>
+        </div>
+
+        <div v-if="loadingMap" class="card muted">正在生成地址分布…</div>
+        <div v-else-if="!maps.length" class="card muted">还没有网段，建好网段后这里会按网段逐张画出地址占用情况。</div>
+
+        <div v-for="m in maps" :key="m.id" class="card">
+          <div class="card-title">
+            <span>
+              {{ m.name }}
+              <span class="mono muted">{{ m.cidr }}</span>
+            </span>
+            <span class="muted">
+              {{ m.mode === 'ip' ? '逐地址' : (m.mode === 'block' ? '按 /24 聚合' : '仅统计') }} ·
+              可用 {{ m.host_count }} · 已登记 {{ m.registered }} · 剩余 {{ m.free_count }}
+              <template v-if="m.conflict"> · <b class="err-text">冲突 {{ m.conflict }}</b></template>
+            </span>
+          </div>
+
+          <div v-if="m.mode === 'none'" class="hint">{{ m.note }}</div>
+
+          <template v-else>
+            <div class="ipmap-grid" :class="{ dense: m.cells.length > 1024 }" :style="gridStyle(m)">
+              <span v-for="c in m.cells" :key="c.ip"
+                    class="ipmap-cell" :class="[cellClass(c), { reg: c.reg }]"
+                    :title="c.tip" @click="onCell(m, c)">{{ c.label }}</span>
+            </div>
+            <div class="hint">
+              <template v-if="m.mode === 'ip'">
+                每格一个地址，格内数字是该 IPv4 的最后一段（.0 / .16 / .32 正好是每行开头）。
+                有底色的格子表示已登记，点一下可跳到「IP 登记」查它的归属。
+              </template>
+              <template v-else>
+                每格一个 /24，格内数字是该 /24 里已登记的条数（格子太小时不显示数字）。
+                鼠标停上去能看到具体是哪一段。
+              </template>
+              <template v-if="m.truncated"> · 该网段登记条数超过单次读取上限，图中没有画全。</template>
+            </div>
+          </template>
         </div>
       </div>
 
@@ -415,7 +482,9 @@
         segs: [], summary: {}, statuses: [],
         ips: [], ipTotal: 0, page: 1, pageSize: 100,
         fSeg: 0, fStatus: '', kw: '',
-        loadingSeg: false, loadingIp: false, saving: false,
+        // 地址分布图：每个网段一份，由后端算好格子
+        maps: [],
+        loadingSeg: false, loadingIp: false, loadingMap: false, saving: false,
         segForm: null, ipForm: null, bulkForm: null, freeView: null,
       };
     },
@@ -428,7 +497,11 @@
     mounted() { this.refreshAll(); },
 
     methods: {
-      refreshAll() { this.loadSegments(); if (this.tab === 'ip') this.loadIps(); },
+      refreshAll() {
+        this.loadSegments();
+        if (this.tab === 'ip') this.loadIps();
+        if (this.tab === 'map') this.loadMap();
+      },
 
       async loadSegments() {
         this.loadingSeg = true;
@@ -437,7 +510,11 @@
           this.segs = (d && d.list) || [];
           this.summary = (d && d.summary) || {};
           this.statuses = (d && d.statuses) || [];
-          if (!this.segForm && !this.ipForm && !this.bulkForm) this.loadIps();
+          if (!this.segForm && !this.ipForm && !this.bulkForm) {
+            this.loadIps();
+            // 图是按网段逐张画的，得等 segs 到位之后再拉（否则会拉到上一次的网段列表）
+            if (this.tab === 'map') this.loadMap();
+          }
         } catch (e) {
           this.$toast(e.message, 'err');
         } finally {
@@ -485,6 +562,64 @@
       segmentLabel(id) {
         const s = this.segs.filter((x) => x.id === id)[0];
         return s ? s.name + '（' + s.cidr + '）' : '网段 #' + id;
+      },
+
+      /* ---------- 地址分布图 ---------- */
+      /**
+       * 每个网段一张图，并发拉取。
+       * ★ 单个网段失败不能把整页带走：某个网段 CIDR 存坏了、或者权限被临时收紧，
+       *   都应该只少一张图，而不是整页空白 —— 所以这里逐个 catch 成 null 再过滤，
+       *   不用 Promise.all 的「一个 reject 全盘皆输」。
+       */
+      async loadMap() {
+        if (!this.segs.length) { this.maps = []; return; }
+        this.loadingMap = true;
+        try {
+          const res = await Promise.all(this.segs.map((s) =>
+            api.get('/ipam/segments/' + s.id + '/map').catch(() => null)));
+          this.maps = res.filter((m) => m && m.ok);
+        } catch (e) {
+          this.$toast(e.message, 'err');
+        } finally {
+          this.loadingMap = false;
+        }
+      },
+
+      /** 列数由后端给（16 列，或小于 16 个地址的小网段按地址数缩减） */
+      gridStyle(m) {
+        return { gridTemplateColumns: 'repeat(' + (m.cols || 16) + ', minmax(0, 1fr))' };
+      },
+
+      /**
+       * 状态 → 格子配色类。写成方法而不是在模板里拼 `'st-' + c.state`：
+       * 一是类名普查脚本会把模板里的半截字面量当成一个类名报未定义，
+       * 二是以后加状态（比如「已回收」）只需要改这里一处。
+       */
+      cellClass(c) {
+        return 'st-' + (c && c.state ? c.state : 'free');
+      },
+
+      /** 点格子 → 跳到「IP 登记」并筛出相关记录；空闲/网络/广播格子没什么可跳的 */
+      onCell(m, c) {
+        if (!c.reg) return;
+        this.tab = 'ip';
+        this.fSeg = m.id;
+        this.fStatus = '';
+        this.page = 1;
+        // 聚合成 /24 的时候格子的 key 是个网段，直接用「前三段.」做模糊匹配更准
+        this.kw = m.mode === 'block'
+          ? c.ip.split('/')[0].split('.').slice(0, 3).join('.') + '.'
+          : c.ip;
+        this.loadIps();
+      },
+
+      jumpSeg(s) {
+        this.tab = 'ip';
+        this.fSeg = s.id;
+        this.fStatus = '';
+        this.kw = '';
+        this.page = 1;
+        this.loadIps();
       },
 
       /* ---------- 网段 ---------- */
