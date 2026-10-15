@@ -6,6 +6,9 @@
   // 工具函数来自 app.js（window.HisUtils）
   const { fmtMoney, statusTag, daysLeft, todayStr, fmtDate, fmtSize } = window.HisUtils || {};
 
+  /** 用户表单「有没有改动」的比较字段（isAdd / id 这类打开后就定的不算） */
+  const USER_KEYS = ['username', 'real_name', 'password', 'role_id', 'is_active'];
+
   /* ==================== 到期提醒 ==================== */
   V.RemindView = {
     data() { return { rows: [], loading: true }; },
@@ -624,7 +627,7 @@
 
   /* ==================== 用户管理（统一账号体系） ==================== */
   V.UsersView = {
-    data() { return { users: [], roles: [], form: null, saving: false }; },
+    data() { return { users: [], roles: [], form: null, formBase: '', saving: false }; },
     async mounted() { await this.load(); },
     computed: {
       me() { const u = window.HisUser && window.HisUser.user; return u || {}; },
@@ -650,8 +653,20 @@
       isSelf(u) { return !!this.me.username && u.username === this.me.username; },
       initial(u) { return String(u.realName || u.username || '?').slice(0, 1); },
       when(u) { return u.createdAt || u.created_at || '-'; },
-      openAdd() { this.form = { isAdd: true, username: '', real_name: '', password: '', role_id: this.defaultRoleId() }; },
-      openEdit(u) { this.form = { isAdd: false, id: u.id, username: u.username, real_name: u.realName, password: '', role_id: u.roleId, is_active: u.isActive }; },
+      openAdd() {
+        this.form = { isAdd: true, username: '', real_name: '', password: '', role_id: this.defaultRoleId() };
+        this.formBase = HisUI.snap(this.form, USER_KEYS);
+      },
+      openEdit(u) {
+        this.form = { isAdd: false, id: u.id, username: u.username, real_name: u.realName, password: '', role_id: u.roleId, is_active: u.isActive };
+        this.formBase = HisUI.snap(this.form, USER_KEYS);
+      },
+      /** 关闭用户表单：改到一半点到遮罩就把账号资料清了不合适，填过内容先确认一次 */
+      tryCloseForm() {
+        if (this.saving) return;
+        if (HisUI.dirty(this.form, this.formBase, USER_KEYS) && !HisUI.confirmDiscard()) return;
+        this.form = null;
+      },
       async save() {
         if (!this.form) return;
         this.saving = true;
@@ -729,9 +744,9 @@
           </table>
         </div>
       </div>
-      <div class="modal-mask" v-if="form" @click.self="form=null">
+      <div class="modal-mask" v-if="form">
         <div class="modal modal-sm">
-          <div class="modal-head"><h3>{{ form.isAdd ? '新增用户' : '编辑用户' }}</h3><span class="modal-close" @click="form=null">×</span></div>
+          <div class="modal-head"><h3>{{ form.isAdd ? '新增用户' : '编辑用户' }}</h3><span class="modal-close" @click="tryCloseForm">×</span></div>
           <div class="modal-body">
             <div class="form-grid">
               <div><label>用户名</label><input v-model="form.username" :disabled="!form.isAdd"></div>
@@ -742,7 +757,7 @@
             </div>
           </div>
           <div class="modal-foot">
-            <button class="btn btn-ghost" @click="form=null">取消</button>
+            <button class="btn btn-ghost" @click="tryCloseForm">取消</button>
             <button class="btn btn-primary" :disabled="saving" @click="save">{{ saving ? '保存中…' : '保存' }}</button>
           </div>
         </div>

@@ -13,6 +13,9 @@
 (function () {
   const V = window.HisViews || (window.HisViews = {});
 
+  /** 参与「有没有改动」比较的字段（派生数据如 has_password 不列进来） */
+  const BM_KEYS = ['name', 'url', 'group_name', 'username', 'note', 'password'];
+
   /** 复制文本：优先 Clipboard API，内网 http 下回落到 execCommand */
   function copyText(text) {
     const t = String(text == null ? '' : text);
@@ -143,10 +146,12 @@
         <button class="btn btn-sm btn-outline" :disabled="page>=pageCount" @click="go(page+1)">下一页</button>
       </div>
 
-      <!-- 新增 / 编辑 -->
-      <div class="modal-mask" v-if="form" @click.self="form=null">
+      <!-- 新增 / 编辑
+           ★ 表单弹窗不写 @click.self：点到外面的遮罩层不该把填了一半的内容清掉。
+             要退出只能点 ✕ / 取消，且填过内容时会先确认一次。 -->
+      <div class="modal-mask" v-if="form">
         <div class="modal" style="width:560px">
-          <div class="modal-head">{{ form.id ? '编辑书签' : '新增书签' }}<span class="modal-close" @click="form=null">✕</span></div>
+          <div class="modal-head">{{ form.id ? '编辑书签' : '新增书签' }}<span class="modal-close" @click="tryCloseForm">✕</span></div>
           <div class="modal-body">
             <div class="form-item">
               <label>名称 *</label>
@@ -185,7 +190,7 @@
             </div>
           </div>
           <div class="modal-foot">
-            <button class="btn btn-outline" @click="form=null">取消</button>
+            <button class="btn btn-outline" @click="tryCloseForm">取消</button>
             <button class="btn btn-primary" :disabled="saving" @click="save">{{ saving ? '保存中' : '保存' }}</button>
           </div>
         </div>
@@ -198,6 +203,7 @@
         kw: '', group: '', loading: false, saving: false, busy: 0,
         shown: {},   // id → { username, password }；只在本次会话内保留，切页即清
         form: null,
+        formBase: '',  // 打开表单那一刻的快照，用来判断用户后来有没有改过东西
       };
     },
 
@@ -268,6 +274,14 @@
             password: undefined, has_password: r.has_password,
           }
           : { id: 0, name: '', url: '', group_name: '', username: '', note: '', password: '', has_password: 0 };
+        this.formBase = HisUI.snap(this.form, BM_KEYS);
+      },
+
+      /** 关闭表单：正在保存就别关；填过内容先确认，避免误点丢掉刚录的账号密码 */
+      tryCloseForm() {
+        if (this.saving) return;
+        if (HisUI.dirty(this.form, this.formBase, BM_KEYS) && !HisUI.confirmDiscard()) return;
+        this.form = null;
       },
       clearPwd() {
         // 显式清空要走「传空串」，与「不改动（undefined）」区分开

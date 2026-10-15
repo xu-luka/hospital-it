@@ -41,6 +41,10 @@
   const ROLE = { 1: '管理员', 2: '工程师', 3: '报障人' };
   const V = {};
 
+  /* 弹窗表单「有没有改动」的比较字段（各组件自己的表单，字段完全不一样） */
+  const ED_KEYS = ['title', 'category', 'module', 'urgency', 'reportTime', 'department', 'reporter', 'content'];
+  const UMODAL_KEYS = ['username', 'password', 'real_name', 'role_id', 'phone'];
+
   const fmtDate = (s) => {
     if (!s) return '';
     return String(s).replace('T', ' ').slice(0, 16);
@@ -394,10 +398,11 @@
         </div>
       </div>
 
-      <!-- Excel 导入弹窗 -->
-      <div class="modal-mask" v-if="importOpen" @click.self="importOpen=false">
+      <!-- Excel 导入弹窗
+           ★ 不写 @click.self：选好文件还没导就点到外面，文件选择会被清掉要重选 -->
+      <div class="modal-mask" v-if="importOpen">
         <div class="modal" style="width:520px">
-          <div class="modal-head"><h3>Excel 导入</h3><span class="x" @click="importOpen=false">✕</span></div>
+          <div class="modal-head"><h3>Excel 导入</h3><span class="x" @click="tryCloseImport">✕</span></div>
           <div class="modal-body">
             <div class="imp-note">
               第一次使用？请先 <a @click="downloadTemplate" style="cursor:pointer;text-decoration:underline;font-weight:600">下载导入模板</a>
@@ -423,7 +428,7 @@
             </div>
           </div>
           <div class="modal-foot">
-            <button class="btn btn-outline" @click="importOpen=false">关闭</button>
+            <button class="btn btn-outline" @click="tryCloseImport">关闭</button>
           </div>
         </div>
       </div>
@@ -497,6 +502,12 @@
         this.exporting = false;
       },
       openImport() { this.importOpen = true; this.importFile = null; this.importResult = null; },
+      /** 关闭导入窗口：选好文件还没开始导时提醒一句，其余情况直接关 */
+      tryCloseImport() {
+        if (this.importing) return;
+        if (!HisUI.confirmIf(!!this.importFile && !this.importResult)) return;
+        this.importOpen = false;
+      },
       async downloadTemplate() {
         this.$toast('正在生成模板，请稍候…');
         try {
@@ -702,7 +713,7 @@
 
       <div class="modal-mask" v-if="showAssign">
         <div class="modal" style="width:420px">
-          <div class="modal-head">指派处理人 <span class="x" @click="showAssign=false">✕</span></div>
+          <div class="modal-head">指派处理人 <span class="x" @click="tryCloseAssign">✕</span></div>
           <div class="modal-body">
             <div class="form-item">
               <label>处理人（工程师/管理员）</label>
@@ -713,7 +724,7 @@
             </div>
           </div>
           <div class="modal-foot">
-            <button class="btn btn-outline" @click="showAssign=false">取消</button>
+            <button class="btn btn-outline" @click="tryCloseAssign">取消</button>
             <button class="btn btn-primary" @click="saveAssign">保存</button>
           </div>
         </div>
@@ -721,7 +732,7 @@
 
       <div class="modal-mask" v-if="showEdit">
         <div class="modal">
-          <div class="modal-head">编辑问题信息 <span class="x" @click="showEdit=false">✕</span></div>
+          <div class="modal-head">编辑问题信息 <span class="x" @click="tryCloseEdit">✕</span></div>
           <div class="modal-body">
             <div class="form-item"><label>标题 *</label><input v-model="ef.title"></div>
             <div class="form-row">
@@ -752,7 +763,7 @@
             <div class="form-item"><label>问题描述</label><textarea v-model="ef.content"></textarea></div>
           </div>
           <div class="modal-foot">
-            <button class="btn btn-outline" @click="showEdit=false">取消</button>
+            <button class="btn btn-outline" @click="tryCloseEdit">取消</button>
             <button class="btn btn-primary" @click="saveEdit">保存</button>
           </div>
         </div>
@@ -763,6 +774,8 @@
         STATUS, STATUS_TAG, URGENCY_TAG, URGENCY, mods: moduleStore, ROLE,
         d: null, logContent: '', showAssign: false, assignId: 0,
         engineers: [], showEdit: false, ef: {}, uploading: false,
+        // 打开弹窗那一刻的快照，用来判断用户后来有没有改过东西
+        efBase: '', assignBase: '',
         previewing: null, previewIndex: 0, previewScale: 1, previewUrl: '',
         sheetNames: [], sheetIndex: 0, sheetHtml: '', previewBlob: null,
       };
@@ -808,7 +821,13 @@
           this.engineers = await this.$api.get('/users/options');
           this.assignId = this.d.issue.assignee_id || 0;
           this.showAssign = true;
+          this.assignBase = String(this.assignId);
         } catch (e) { this.$toast(e.message, 'err'); }
+      },
+      /** 关闭指派弹窗：选了下拉还没点保存就退出，提醒一句 */
+      tryCloseAssign() {
+        if (String(this.assignId) !== this.assignBase && !HisUI.confirmDiscard()) return;
+        this.showAssign = false;
       },
       async saveAssign() {
         try {
@@ -831,6 +850,12 @@
           content: i.content,
         };
         this.showEdit = true;
+        this.efBase = HisUI.snap(this.ef, ED_KEYS);
+      },
+      /** 关闭编辑问题弹窗：标题、描述这些填一半被清掉最费事，先确认一次 */
+      tryCloseEdit() {
+        if (HisUI.dirty(this.ef, this.efBase, ED_KEYS) && !HisUI.confirmDiscard()) return;
+        this.showEdit = false;
       },
       onEfCatChange() {
         if (this.ef.category === '__add__') {
@@ -1161,7 +1186,7 @@
 
       <div class="modal-mask" v-if="showModal">
         <div class="modal" style="width:460px">
-          <div class="modal-head">{{ ef.id ? '编辑用户' : '新建用户' }} <span class="x" @click="showModal=false">✕</span></div>
+          <div class="modal-head">{{ ef.id ? '编辑用户' : '新建用户' }} <span class="x" @click="tryCloseModal">✕</span></div>
           <div class="modal-body">
             <div class="form-item"><label>用户名 *</label><input v-model="ef.username" :disabled="!!ef.id"></div>
             <div class="form-item" v-if="!ef.id"><label>初始密码 *（至少 6 位）</label><input v-model="ef.password"></div>
@@ -1172,14 +1197,14 @@
             <div class="form-item"><label>联系电话</label><input v-model="ef.phone"></div>
           </div>
           <div class="modal-foot">
-            <button class="btn btn-outline" @click="showModal=false">取消</button>
+            <button class="btn btn-outline" @click="tryCloseModal">取消</button>
             <button class="btn btn-primary" @click="saveUser">保存</button>
           </div>
         </div>
       </div>
     </div>`,
     data() {
-      return { list: [], ROLE, showModal: false, ef: {} };
+      return { list: [], ROLE, showModal: false, ef: {}, efBase: '' };
     },
     computed: {
       me() { const u = window.HisUser && window.HisUser.user; return u || {}; },
@@ -1188,8 +1213,21 @@
       fmt: (s) => fmtDate(s),
       tagRole(r) { return { 1: 'tag-processing', 2: 'tag-pending', 3: 'tag-closed' }[r] || 'tag-closed'; },
       async load() { try { this.list = await this.$api.get('/users'); } catch (e) { this.$toast(e.message, 'err'); } },
-      showNew() { this.ef = { id: 0, username: '', password: '', real_name: '', role_id: 3, phone: '' }; this.showModal = true; },
-      edit(u) { this.ef = { id: u.id, username: u.username, real_name: u.real_name, role_id: u.role_id, phone: u.phone }; this.showModal = true; },
+      showNew() {
+        this.ef = { id: 0, username: '', password: '', real_name: '', role_id: 3, phone: '' };
+        this.showModal = true;
+        this.efBase = HisUI.snap(this.ef, UMODAL_KEYS);
+      },
+      edit(u) {
+        this.ef = { id: u.id, username: u.username, real_name: u.real_name, role_id: u.role_id, phone: u.phone };
+        this.showModal = true;
+        this.efBase = HisUI.snap(this.ef, UMODAL_KEYS);
+      },
+      /** 关闭用户弹窗：用户名、初始密码填一半被清掉要重来，先确认一次 */
+      tryCloseModal() {
+        if (HisUI.dirty(this.ef, this.efBase, UMODAL_KEYS) && !HisUI.confirmDiscard()) return;
+        this.showModal = false;
+      },
       async saveUser() {
         if (!this.ef.id && !this.ef.username.trim()) return this.$toast('请填写用户名', 'err');
         if (!this.ef.id && (!this.ef.password || this.ef.password.length < 6)) return this.$toast('初始密码至少 6 位', 'err');

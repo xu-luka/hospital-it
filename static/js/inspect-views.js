@@ -9,6 +9,9 @@
 (function () {
   const V = window.HisViews || (window.HisViews = {});
 
+  /** 巡检参数表单「有没有改动」的比较字段（thresholds 是对象，snap 里走 JSON 比较） */
+  const STG_KEYS = ['concurrency', 'timeout_ms', 'interval_sec', 'ssh_port_default', 'report_dir', 'thresholds'];
+
   const OS_ORDER = ['linux', 'windows', 'esxi', 'switch', 'bmc', 'database'];
   const AUTH_HINT = {
     password: 'SSH / 账号密码',
@@ -144,8 +147,10 @@
         </div>
       </div>
 
-      <!-- 编辑 / 新增 -->
-      <div class="modal-mask" v-if="form" @click.self="closeForm">
+      <!-- 编辑 / 新增
+           ★ 不写 @click.self：设备表单字段最多（含服务检查、自定义命令两组可增删的行），
+             点到遮罩就清空的话损失最大。退出走 ✕ / 取消，改过内容会先确认。 -->
+      <div class="modal-mask" v-if="form">
         <div class="modal" style="width:720px;max-height:88vh;overflow:auto">
           <div class="modal-head">{{ form.id ? '编辑设备' : '新增设备' }} <span class="x" @click="closeForm">✕</span></div>
           <div class="modal-body">
@@ -248,9 +253,9 @@
       </div>
 
       <!-- 巡检参数 -->
-      <div class="modal-mask" v-if="stg" @click.self="stg=null">
+      <div class="modal-mask" v-if="stg">
         <div class="modal" style="width:520px">
-          <div class="modal-head">巡检参数 <span class="x" @click="stg=null">✕</span></div>
+          <div class="modal-head">巡检参数 <span class="x" @click="tryCloseStg">✕</span></div>
           <div class="modal-body">
             <div class="form-row">
               <div class="form-item"><label>并发采集数</label>
@@ -276,7 +281,7 @@
             <div class="muted" style="font-size:12px">保存后即刻生效，无需重启服务。</div>
           </div>
           <div class="modal-foot">
-            <button class="btn btn-outline" @click="stg=null">取消</button>
+            <button class="btn btn-outline" @click="tryCloseStg">取消</button>
             <button class="btn btn-primary" @click="saveSettings" :disabled="saving">保存</button>
           </div>
         </div>
@@ -286,8 +291,8 @@
     data() {
       return {
         rows: [], meta: {}, source: null, kw: '', fOs: '', fEnabled: '',
-        form: null, errs: [], saving: false, checking: null, checkResult: null,
-        stg: null, timer: null,
+        form: null, formBase: '', errs: [], saving: false, checking: null, checkResult: null,
+        stg: null, stgBase: '', timer: null,
         thresholdKeys: [
           { k: 'cpu_percent_warn', label: 'CPU 警告' },
           { k: 'cpu_percent_critical', label: 'CPU 严重' },
@@ -358,7 +363,7 @@
         };
       },
 
-      openNew() { this.errs = []; this.form = this.blankForm(); },
+      openNew() { this.errs = []; this.form = this.blankForm(); this.markFormBase(); },
 
       edit(r) {
         this.errs = [];
@@ -370,9 +375,22 @@
         f.auth_password = ''; f.auth_passphrase = '';
         f.has_password = !!r.has_password;
         this.form = f;
+        this.markFormBase();
       },
 
-      closeForm() { this.form = null; this.errs = []; },
+      /** 参与「有没有改动」比较的字段：表单自身除 id / has_password（派生）之外的全部 */
+      formKeys() {
+        const f = this.form || {};
+        return Object.keys(f).filter((k) => k !== 'id' && k !== 'has_password');
+      },
+      markFormBase() { this.formBase = HisUI.snap(this.form, this.formKeys()); },
+
+      /** 关闭设备表单：字段最多（含两组可增删的行），改到一半被清掉最亏 */
+      closeForm() {
+        if (this.saving) return;
+        if (HisUI.dirty(this.form, this.formBase, this.formKeys()) && !HisUI.confirmDiscard()) return;
+        this.form = null; this.errs = [];
+      },
 
       async save() {
         this.errs = [];
@@ -424,7 +442,15 @@
         try {
           const s = await api.get('/api/inspection/settings');
           this.stg = JSON.parse(JSON.stringify(s));
+          this.stgBase = HisUI.snap(this.stg, STG_KEYS);
         } catch (e) { this.$toast(e.message, 'err'); }
+      },
+
+      /** 关闭巡检参数：改完没保存就点到外面，阈值会悄悄回到原样，先确认一次 */
+      tryCloseStg() {
+        if (this.saving) return;
+        if (HisUI.dirty(this.stg, this.stgBase, STG_KEYS) && !HisUI.confirmDiscard()) return;
+        this.stg = null;
       },
 
       async saveSettings() {

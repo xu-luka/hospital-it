@@ -8,6 +8,9 @@
   const V = window.HisViews || (window.HisViews = {});
   const can = function (c) { return window.HisPerm && window.HisPerm.can(c); };
 
+  /** 角色表单「有没有改动」的比较字段 */
+  const ROLE_KEYS = ['name', 'code'];
+
   // 动作隐含关系（与后端一致）：勾「管理」自动带上「提交 / 查看」，
   // 取消「查看」自动取消「提交 / 管理」。这样界面显示的就是实际生效的语义，
   // 不会出现"没勾查看却能看到"的迷惑状态。
@@ -19,7 +22,7 @@
         roles: [], modules: [], groups: [],
         cur: null, sel: [],
         saving: false, loading: true,
-        form: null, showForm: false,
+        form: null, showForm: false, formBase: '',
       };
     },
     computed: {
@@ -106,11 +109,18 @@
       openNewRole() {
         this.form = { isAdd: true, id: null, name: '', code: '' };
         this.showForm = true;
+        this.formBase = HisUI.snap(this.form, ROLE_KEYS);
       },
       openRename() {
         if (!this.cur) return;
         this.form = { isAdd: false, id: this.cur.id, name: this.cur.name, code: this.cur.code };
         this.showForm = true;
+        this.formBase = HisUI.snap(this.form, ROLE_KEYS);
+      },
+      /** 关闭角色表单：名字敲了一半被清掉要重打，先确认一次 */
+      tryCloseRole() {
+        if (HisUI.dirty(this.form, this.formBase, ROLE_KEYS) && !HisUI.confirmDiscard()) return;
+        this.showForm = false;
       },
       async saveRole() {
         const f = this.form;
@@ -222,7 +232,7 @@
         <div class="modal" style="width:420px">
           <div class="modal-head">
             {{ form && form.isAdd ? '新增角色' : '角色改名' }}
-            <span class="x" @click="showForm=false">✕</span>
+            <span class="x" @click="tryCloseRole">✕</span>
           </div>
           <div class="modal-body">
             <div class="form-item">
@@ -235,7 +245,7 @@
             </div>
           </div>
           <div class="modal-foot">
-            <button class="btn btn-outline" @click="showForm=false">取消</button>
+            <button class="btn btn-outline" @click="tryCloseRole">取消</button>
             <button class="btn btn-primary" @click="saveRole">保存</button>
           </div>
         </div>

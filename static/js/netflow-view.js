@@ -12,6 +12,10 @@
 (function () {
   const V = window.HisViews || (window.HisViews = {});
 
+  /** 阈值设置表单「有没有改动」的比较字段（界面按 Mbps 输入，min_bps 是保存时换算出来的） */
+  const CFG_KEYS = ['enabled', 'interval_sec', 'window_min', 'ratio', 'minMbps',
+                    'cool_down_min', 'min_samples', 'keep_days'];
+
   const WINDOWS = [
     { v: 15, label: '最近 15 分钟' },
     { v: 60, label: '最近 1 小时' },
@@ -305,9 +309,9 @@
       </div>
 
       <!-- 阈值设置 -->
-      <div class="modal-mask" v-if="cfgForm" @click.self="cfgForm=null">
+      <div class="modal-mask" v-if="cfgForm">
         <div class="modal" style="width:560px">
-          <div class="modal-head">流量阈值设置 <span class="x" @click="cfgForm=null">✕</span></div>
+          <div class="modal-head">流量阈值设置 <span class="x" @click="tryCloseCfg">✕</span></div>
           <div class="modal-body">
             <div class="form-row">
               <div class="form-item"><label>自动采集</label>
@@ -342,7 +346,7 @@
             </div>
           </div>
           <div class="modal-foot">
-            <button class="btn btn-outline" @click="cfgForm=null">取消</button>
+            <button class="btn btn-outline" @click="tryCloseCfg">取消</button>
             <button class="btn btn-primary" @click="saveConfig" :disabled="saving">{{ saving ? '保存中' : '保存' }}</button>
           </div>
         </div>
@@ -367,6 +371,7 @@
         saving: false,
         series: null,
         cfgForm: null,
+        cfgBase: '',
         showDiag: false,
         showScope: false,
         savingScope: false,
@@ -578,7 +583,15 @@
           const c = Object.assign({}, r.config);
           c.minMbps = Math.round((Number(c.min_bps) || 0) / 1e6 * 100) / 100;
           this.cfgForm = c;
+          this.cfgBase = HisUI.snap(this.cfgForm, CFG_KEYS);
         } catch (e) { this.$toast(e.message, 'err'); }
+      },
+
+      /** 关闭阈值设置：改完没保存就点到外面，阈值会悄悄回到原样，先确认一次 */
+      tryCloseCfg() {
+        if (this.saving) return;
+        if (HisUI.dirty(this.cfgForm, this.cfgBase, CFG_KEYS) && !HisUI.confirmDiscard()) return;
+        this.cfgForm = null;
       },
 
       async saveConfig() {

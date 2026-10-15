@@ -15,6 +15,13 @@
 
   const STATUS_BADGE = { used: 'ok', reserved: 'warn', free: 'muted', conflict: 'err' };
 
+  /* 各表单「有没有改动」的比较字段（白名单：id 与导出的预览结果都不算改动） */
+  const SEG_KEYS = ['name', 'cidr', 'gateway', 'vlan', 'location', 'note'];
+  const IP_KEYS = ['segment_id', 'ip', 'status', 'hostname', 'owner', 'device_type', 'mac', 'note'];
+  // ★ 批量登记只认 text 与几个下拉：preview / result 是点了「预览」之后由接口回的派生数据，
+  //   若把它们算进改动里，光是预览一下再关窗口也会被拦下来问一次。
+  const BULK_KEYS = ['segment_id', 'status', 'owner', 'device_type', 'text'];
+
   V.IpamView = {
     template: `
     <div>
@@ -282,10 +289,11 @@
         </div>
       </div>
 
-      <!-- ============ 网段表单 ============ -->
-      <div class="modal-mask" v-if="segForm" @click.self="segForm = null">
+      <!-- ============ 网段表单 ============
+           ★ 表单弹窗一律不写 @click.self（点遮罩不关闭），退出走 ✕ / 取消 + 未保存确认 -->
+      <div class="modal-mask" v-if="segForm">
         <div class="modal" style="width:560px">
-          <div class="modal-head">{{ segForm.id ? '编辑网段' : '新增网段' }}<span class="modal-close" @click="segForm = null">✕</span></div>
+          <div class="modal-head">{{ segForm.id ? '编辑网段' : '新增网段' }}<span class="modal-close" @click="tryCloseSeg">✕</span></div>
           <div class="modal-body">
             <div class="form-item">
               <label>网段名称 *</label>
@@ -316,16 +324,16 @@
             </div>
           </div>
           <div class="modal-foot">
-            <button class="btn btn-outline" @click="segForm = null">取消</button>
+            <button class="btn btn-outline" @click="tryCloseSeg">取消</button>
             <button class="btn btn-primary" :disabled="saving" @click="saveSeg">{{ saving ? '保存中' : '保存' }}</button>
           </div>
         </div>
       </div>
 
       <!-- ============ IP 表单 ============ -->
-      <div class="modal-mask" v-if="ipForm" @click.self="ipForm = null">
+      <div class="modal-mask" v-if="ipForm">
         <div class="modal" style="width:600px">
-          <div class="modal-head">{{ ipForm.id ? '编辑登记' : '登记 IP' }}<span class="modal-close" @click="ipForm = null">✕</span></div>
+          <div class="modal-head">{{ ipForm.id ? '编辑登记' : '登记 IP' }}<span class="modal-close" @click="tryCloseIp">✕</span></div>
           <div class="modal-body">
             <div class="form-row">
               <div class="form-item">
@@ -371,16 +379,16 @@
             </div>
           </div>
           <div class="modal-foot">
-            <button class="btn btn-outline" @click="ipForm = null">取消</button>
+            <button class="btn btn-outline" @click="tryCloseIp">取消</button>
             <button class="btn btn-primary" :disabled="saving" @click="saveIp">{{ saving ? '保存中' : '保存' }}</button>
           </div>
         </div>
       </div>
 
       <!-- ============ 批量登记 ============ -->
-      <div class="modal-mask" v-if="bulkForm" @click.self="bulkForm = null">
+      <div class="modal-mask" v-if="bulkForm">
         <div class="modal" style="width:680px">
-          <div class="modal-head">批量登记 IP<span class="modal-close" @click="bulkForm = null">✕</span></div>
+          <div class="modal-head">批量登记 IP<span class="modal-close" @click="tryCloseBulk">✕</span></div>
           <div class="modal-body">
             <div class="form-row">
               <div class="form-item">
@@ -445,7 +453,7 @@
             </div>
           </div>
           <div class="modal-foot">
-            <button class="btn btn-outline" @click="bulkForm = null">关闭</button>
+            <button class="btn btn-outline" @click="tryCloseBulk">关闭</button>
             <button class="btn btn-outline" :disabled="saving" @click="doBulk(true)">预览</button>
             <button class="btn btn-primary" :disabled="saving || !bulkForm.text.trim()" @click="doBulk(false)">
               {{ saving ? '处理中' : '确认登记' }}
@@ -486,6 +494,8 @@
         maps: [],
         loadingSeg: false, loadingIp: false, loadingMap: false, saving: false,
         segForm: null, ipForm: null, bulkForm: null, freeView: null,
+        // 打开表单那一刻的快照，用来判断用户后来有没有改过东西（空着关闭不弹确认）
+        segBase: '', ipBase: '', bulkBase: '',
       };
     },
 
@@ -627,6 +637,13 @@
         this.segForm = s
           ? { id: s.id, name: s.name, cidr: s.cidr, gateway: s.gateway, vlan: s.vlan, location: s.location, note: s.note }
           : { id: 0, name: '', cidr: '', gateway: '', vlan: '', location: '', note: '' };
+        this.segBase = HisUI.snap(this.segForm, SEG_KEYS);
+      },
+      /** 关闭网段表单：保存中不关；填过内容先确认（新增网段要填名称和 CIDR，误点一次就得重来） */
+      tryCloseSeg() {
+        if (this.saving) return;
+        if (HisUI.dirty(this.segForm, this.segBase, SEG_KEYS) && !HisUI.confirmDiscard()) return;
+        this.segForm = null;
       },
       async saveSeg() {
         const f = this.segForm;
@@ -676,6 +693,13 @@
             ip: '', status: 'used', hostname: '', owner: '', device_type: '', mac: '', note: '',
           };
         }
+        this.ipBase = HisUI.snap(this.ipForm, IP_KEYS);
+      },
+      /** 关闭 IP 表单：同上，登记一条 IP 要填好几个字段，别被一次误点清掉 */
+      tryCloseIp() {
+        if (this.saving) return;
+        if (HisUI.dirty(this.ipForm, this.ipBase, IP_KEYS) && !HisUI.confirmDiscard()) return;
+        this.ipForm = null;
       },
       async saveIp() {
         const f = this.ipForm;
@@ -716,6 +740,13 @@
           segment_id: (this.fSeg || (this.segs[0] && this.segs[0].id) || 0),
           status: 'used', owner: '', device_type: '', text: '', preview: null, result: null,
         };
+        this.bulkBase = HisUI.snap(this.bulkForm, BULK_KEYS);
+      },
+      /** 关闭批量登记：这里最容易出事 —— 粘贴一整段地址清单后手一抖点到外面就全没了 */
+      tryCloseBulk() {
+        if (this.saving) return;
+        if (HisUI.dirty(this.bulkForm, this.bulkBase, BULK_KEYS) && !HisUI.confirmDiscard()) return;
+        this.bulkForm = null;
       },
       async doBulk(dry) {
         const f = this.bulkForm;
@@ -734,6 +765,8 @@
           } else {
             f.preview = null;
             f.result = d;
+            // 已经落库了，之后点「关闭」不该再被当成「有未保存内容」拦一次
+            this.bulkBase = HisUI.snap(f, BULK_KEYS);
             this.$toast('新增 ' + d.added + ' 条，失败 ' + d.failed.length + ' 条',
               d.failed.length ? '' : 'ok');
             this.loadSegments();

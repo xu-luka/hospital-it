@@ -8,6 +8,9 @@
   const can = function (c) { return !!(window.HisPerm && window.HisPerm.can(c)); };
   const THEME_KEY = 'his_theme';
 
+  /** 改密码表单「有没有改动」的比较字段 */
+  const PWD_KEYS = ['old', 'next', 'next2'];
+
   /* ==========================================================================
      线条图标（内联 SVG）
      —— 这里刻意不用 emoji：emoji 在不同 Windows 版本上是彩色点阵字体，与
@@ -272,14 +275,14 @@
 
       <div class="modal-mask" v-if="showPwd">
         <div class="modal modal-sm">
-          <div class="modal-head">修改密码 <span class="modal-close" @click="showPwd=false" v-html="ic('x')"></span></div>
+          <div class="modal-head">修改密码 <span class="modal-close" @click="tryClosePwd" v-html="ic('x')"></span></div>
           <div class="modal-body">
             <div class="form-item"><label>原密码</label><input type="password" v-model="pf.old"></div>
             <div class="form-item"><label>新密码（至少 6 位）</label><input type="password" v-model="pf.next"></div>
             <div class="form-item"><label>确认新密码</label><input type="password" v-model="pf.next2"></div>
           </div>
           <div class="modal-foot">
-            <button class="btn btn-outline" @click="showPwd=false">取消</button>
+            <button class="btn btn-outline" @click="tryClosePwd">取消</button>
             <button class="btn btn-primary" @click="savePwd">保存</button>
           </div>
         </div>
@@ -295,6 +298,7 @@
         toasts: [],
         showPwd: false,
         pf: { old: '', next: '', next2: '' },
+        pfBase: '',
         theme: readTheme(),
         now: Date.now(),
         alarmCount: 0,
@@ -577,6 +581,12 @@
       openPwd() {
         this.pf = { old: '', next: '', next2: '' };
         this.showPwd = true;
+        this.pfBase = HisUI.snap(this.pf, PWD_KEYS);
+      },
+      /** 关闭改密码窗口：密码已填了一两个框时提醒一句，别让人白敲一遍 */
+      tryClosePwd() {
+        if (HisUI.dirty(this.pf, this.pfBase, PWD_KEYS) && !HisUI.confirmDiscard()) return;
+        this.showPwd = false;
       },
       logout() {
         api.setUser(null, null);

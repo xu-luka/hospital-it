@@ -11,6 +11,9 @@
   };
   const ALLOWED = '.docx,.doc,.pdf';
 
+  /** 上传表单「有没有改动」的比较字段 */
+  const UP_KEYS = ['title', 'category_id', 'tags', 'remark'];
+
   const V = {};
   V.DocsView = {
     template: `
@@ -67,10 +70,11 @@
         <button :disabled="page>=pageCount" @click="goPage(page+1)">下一页</button>
       </div>
 
-      <!-- 上传弹窗 -->
-      <div class="modal-mask" v-if="uploadOpen" @click.self="uploadOpen=false">
+      <!-- 上传弹窗
+           ★ 不写 @click.self：选好文件、标题填了一半，点到外面就白选了 -->
+      <div class="modal-mask" v-if="uploadOpen">
         <div class="modal" style="width:560px">
-          <div class="modal-head">上传技术文档 <span class="x" @click="uploadOpen=false">✕</span></div>
+          <div class="modal-head">上传技术文档 <span class="x" @click="tryCloseUpload">✕</span></div>
           <div class="modal-body">
             <div class="form-item"><label>选择文件 *（Word .docx / .doc、PDF）</label>
               <input type="file" :accept="allowed" @change="onFile" style="font-size:13px">
@@ -96,16 +100,16 @@
             </div>
           </div>
           <div class="modal-foot">
-            <button class="btn btn-outline" @click="uploadOpen=false">取消</button>
+            <button class="btn btn-outline" @click="tryCloseUpload">取消</button>
             <button class="btn btn-primary" :disabled="!pendFile || saving" @click="submitUpload">{{ saving ? '上传中…' : '上传' }}</button>
           </div>
         </div>
       </div>
 
       <!-- 类型管理弹窗 -->
-      <div class="modal-mask" v-if="catsOpen" @click.self="catsOpen=false">
+      <div class="modal-mask" v-if="catsOpen">
         <div class="modal" style="width:480px">
-          <div class="modal-head">文档类型管理 <span class="x" @click="catsOpen=false">✕</span></div>
+          <div class="modal-head">文档类型管理 <span class="x" @click="tryCloseCats">✕</span></div>
           <div class="modal-body">
             <div class="cat-mgr-add">
               <input v-model="newCat" placeholder="输入新类型名称（如：应急预案）" @keyup.enter="addCat" style="flex:1">
@@ -132,7 +136,7 @@
             </div>
           </div>
           <div class="modal-foot">
-            <button class="btn btn-outline" @click="catsOpen=false">关闭</button>
+            <button class="btn btn-outline" @click="tryCloseCats">关闭</button>
           </div>
         </div>
       </div>
@@ -178,6 +182,7 @@
         pendFile: null,
         saving: false,
         form: { title: '', category_id: '', tags: '', remark: '' },
+        upBase: '',   // 打开上传窗口那一刻的快照，用来判断用户后来有没有改过东西
         // 类型管理
         catsOpen: false,
         newCat: '',
@@ -230,6 +235,13 @@
         this.form = { title: '', category_id: '', tags: '', remark: '' };
         this.pendFile = null; this.saving = false;
         this.uploadOpen = true;
+        this.upBase = HisUI.snap(this.form, UP_KEYS);
+      },
+      /** 关闭上传窗口：已选文件（或标题等填过）就确认一次，别让人白选一遍 */
+      tryCloseUpload() {
+        if (this.saving) return;
+        if (!HisUI.confirmIf(!!this.pendFile || HisUI.dirty(this.form, this.upBase, UP_KEYS))) return;
+        this.uploadOpen = false;
       },
       onFile(ev) { this.pendFile = ev.target.files[0] || null; if (this.pendFile && !this.form.title) this.form.title = this.pendFile.name.replace(/\.[^.]+$/, ''); ev.target.value = ''; },
       onCatChange() {
@@ -266,6 +278,11 @@
 
       // ---- 类型管理 ----
       openCats() { this.newCat = ''; this.editingId = 0; this.catsOpen = true; },
+      /** 关闭类型管理：新增框里打了字、或正改着某个类型名，就先确认一次 */
+      tryCloseCats() {
+        if (!HisUI.confirmIf(!!String(this.newCat || '').trim() || !!this.editingId)) return;
+        this.catsOpen = false;
+      },
       async addCat() {
         const name = this.newCat.trim().slice(0, 30);
         if (!name) return;
