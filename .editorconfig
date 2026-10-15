@@ -1,0 +1,23 @@
+# 编辑器统一规则 —— 多人协作时避免「你用 tab、我用空格」的无谓 diff。
+# 与 .gitattributes 配合：仓库内统一 LF，.bat 强制 CRLF（cmd.exe 要求）。
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+# Windows 批处理必须 CRLF，否则 cmd.exe 解析会出诡异问题（真实踩过）
+[*.{bat,cmd}]
+end_of_line = crlf
+
+# Markdown 里行尾空格常被用作「换行不换段」，别自动删
+[*.md]
+trim_trailing_whitespace = false
+
+# Makefile 必须用 tab（本项目暂无，预留）
+[Makefile]
+indent_style = tab
