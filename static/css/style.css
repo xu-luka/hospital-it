@@ -3066,18 +3066,23 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-base); }
 .ip-table .c-note  { width: 196px; }
 .ip-table .c-ops   { width: 210px; }
 
-/* ★ IP 登记表单独收窄（2026-10-30）：它只有 8 列，1110px 就装得下，
+/* ★ IP 登记表单独收窄（2026-10-30）：它只有 8 列，1100px 就装得下，
    而共用的 min-width 是 1210px（网段表要那么宽）—— 结果这里白白多出 68px 横向滚动，
    最右边的操作列被推出可视区，用户以为「查看设备」那个按钮没了。
-   列宽之和 1100 ≤ min-width，容器比它宽时按比例分配，不会出现滚动条。 */
+
+   ★ 列宽之和必须 = min-width（1100 = 160+72+146+104+100+142+188+188）。
+   IP 那一格要装「13 位地址 + 一个 2 字标签」：实测单元格左右各 12px 内边距，
+   144px 的格子里只剩 125px，地址 93.6 + 标签 34 + 间距 4 = 131.6 → 换行，
+   于是 IP、标签、网段名各占一行，看着像排版坏了。
+   所以 IP 列给到 160px，从「使用人/设备类型」各让 12/4px（那两列装的是 4~5 个汉字）。 */
 .ip-table.ip-reg { min-width: 1100px; }
-.ip-table.ip-reg .c-ip    { width: 136px; }
+.ip-table.ip-reg .c-ip    { width: 160px; }
 .ip-table.ip-reg .c-st    { width: 72px; }
 .ip-table.ip-reg .c-host  { width: 146px; }
-.ip-table.ip-reg .c-owner { width: 116px; }
-.ip-table.ip-reg .c-type  { width: 104px; }
+.ip-table.ip-reg .c-owner { width: 104px; }
+.ip-table.ip-reg .c-type  { width: 100px; }
 .ip-table.ip-reg .c-mac   { width: 142px; }
-.ip-table.ip-reg .c-note  { width: 196px; }
+.ip-table.ip-reg .c-note  { width: 188px; }
 .ip-table.ip-reg .c-ops   { width: 188px; }
 
 /* 来源标记：这一行来自【终端资产】台账（只读同步，不是本页登记的）。
@@ -3086,6 +3091,18 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-base); }
   background: var(--info-soft);
   border-color: var(--info-line);
   color: var(--info);
+  font-size: var(--fs-xs);
+  padding: 1px 5px;
+  margin-right: 4px;
+}
+
+/* 外网地址那一条（台账「外网地址」列 = 办公网 IP）。
+   用和备注里「外网 x」同一个橙色，扫一眼就知道「这一行是办公网那个地址」，
+   不会和同网段的内网设备混在一起。 */
+.chip-wan {
+  background: var(--warn-soft);
+  border-color: var(--warn-line);
+  color: var(--warn);
   font-size: var(--fs-xs);
   padding: 1px 5px;
   margin-right: 4px;

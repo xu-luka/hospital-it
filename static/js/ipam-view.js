@@ -130,7 +130,7 @@
                     <template v-if="s.conflict"> · <b class="err-text">冲突 {{ s.conflict }}</b></template>
                   </span>
                   <span class="cell-sub" v-if="s.terminal_only">
-                    其中 {{ s.terminal_only }} 个已被终端资产占用（未登记）
+                    其中 {{ s.terminal_only }} 个已被终端资产占用（未登记，含外网地址）
                   </span>
                 </td>
                 <td class="ops">
@@ -197,8 +197,13 @@
                   <td>
                     <span class="mono cell-strong">{{ r.ip }}</span>
                     <!-- 来源标签贴在 IP 同一行：放第二行会把「网段名」挤到第三行，
-                         130px 的列宽装不下，看着像排版坏了 -->
-                    <span v-if="r.source === 'terminal'" class="chip chip-term">终端</span>
+                         130px 的列宽装不下，看着像排版坏了。
+                         外网那条写「外网」（橙色，跟备注里的「外网 x」同色）：
+                         它本身就是台账「外网地址」列来的地址，写「终端·外网」四个字会撑到换行，
+                         于是 IP、标签、网段名各占一行 —— 128px 的列宽装不下四个字。
+                         「它来自终端资产」这件事由备注首词和「查看设备」按钮表达。 -->
+                    <span v-if="r.source === 'terminal'"
+                          class="chip" :class="r.net === 'out' ? 'chip-wan' : 'chip-term'">{{ r.net === 'out' ? '外网' : '终端' }}</span>
                     <span class="cell-sub">{{ segmentLabel(r.segment_id) }}</span>
                   </td>
                   <td><span class="dev-badge" :class="badgeOf(r.status)">{{ r.status_label }}</span></td>
@@ -216,10 +221,10 @@
                   <td><span class="mono">{{ r.mac || '—' }}</span></td>
                   <td>
                     <span class="cell-sub">{{ r.note || '—' }}</span>
-                    <!-- 台账里填了「外网地址」的设备必须在这里也标出来。
-                         外网地址不属于任何内网网段，不会单独成为一条登记记录，
-                         不标注的话用户在 IP 管理里怎么翻都看不到那台机器的外网地址，
-                         结论就是「外网地址没写进去」。 -->
+                    <!-- 台账里填了「外网地址」的设备，在内网这一行的备注里再标一句。
+                         外网地址自己也有一行（标「终端·外网」），这里只是让人在看到
+                         内网 IP 时就知道这台机器另一个地址是什么 —— 两处说的是同一个值，
+                         不是两个字段，所以外网那一行不再重复（wanOf 对 out 行返回空）。 -->
                     <span v-if="wanOf(r)" class="cell-sub mono is-wan" :title="'外网地址 ' + wanOf(r)">
                       外网 {{ wanOf(r) }}
                     </span>
@@ -260,9 +265,10 @@
             设备改了 IP 或删除了，这里立刻跟着变。也因此不需要再手工登记一遍（会被拒绝并提示是哪台设备）。
             要让某个地址释放出来，请到终端资产把那台设备的「内网地址」清掉，或者直接删掉那台设备。
             <br>
-            备注列里橙色那行是这个设备在台账里填的<b>外网地址</b>。它不属于任何内网网段，所以不参与占用统计，
-            也不会单独占一行 —— 只做标注。只填了外网、内网地址为空的设备在本页不会出现，
-            要核对它们请在【终端资产】的搜索框里直接输外网地址。
+            台账的「内网地址」「外网地址」两列<b>各占一行</b>：外网地址那行在 IP 后面标一个橙色的「外网」。
+            院内「外网」指办公网（如 10.10.10.0/24）、「内网」指医疗业务网，两列都是真实在用的地址，
+            所以都会并进对应网段、都参与占用统计 —— 别再手工登记一遍，会被拒绝。
+            内网那行的橙色「外网 x.x.x.x」只是这台机器的另一个地址，不是第二个字段。
           </div>
           <div class="hint" v-if="mergeNote">{{ mergeNote }}</div>
         </div>
@@ -659,9 +665,13 @@
         return 'ip-fill';
       },
       badgeOf(status) { return STATUS_BADGE[status] || 'muted'; },
-      /** 终端行的外网地址（台账「外网地址」列）。手工登记的记录没有这个字段，返回空。 */
+      /**
+       * 终端行的外网地址（台账「外网地址」列）。
+       * 只在内网那一行返回 —— 外网地址自己已经单独占一行了，再标一遍就是同一个值出现两次。
+       * 手工登记的记录没有这个字段，返回空。
+       */
       wanOf(r) {
-        if (!r) return '';
+        if (!r || r.net === 'out') return '';
         return r.ip_extra || (r.device && r.device.ip_extra) || '';
       },
       segmentLabel(id) {

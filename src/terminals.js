@@ -592,38 +592,58 @@ function remove(id) {
 }
 
 /**
- * 供【IP 管理】用：只取「填了内网地址」的设备，字段精简、不分页。
+ * 供【IP 管理】用：把「内网地址」「外网地址」两列都摊成地址行，字段精简、不分页。
  *
  * 那边要的是一张「这个地址被谁占着」的对照表，工单统计一律用不上，
  * 所以不套 SELECT_WITH_STATS —— 每行三个子查询乘几百行是白费。
  *
+ * ★ 为什么一台设备会出两行（2026-10-30 修）：
+ *   台账里的「外网地址」是这台机器的**办公网 IP**（如 10.10.10.94），它和内网
+ *   地址一样是院内真实占用的一个地址，落在 10.10.10.0/24 这种真实网段里。
+ *   原先只按 `ip` 取、只在备注里标一句「外网 x」→ 用户建好 10.10.10.0/24 后
+ *   发现这个段一个设备都关联不上（看着像「已登记 0 / 剩余 0」的空段），
+ *   来报「这台设备就是 10.10.10.0/24 的，IP 管理里没关联」。
+ *   所以现在两列都进清单，用 net 字段区分：'in' = 内网地址、'out' = 外网地址。
+ *
  * ★ 台账里没有「报废」这一项，所以这里不再区分「是否已释放」：
  *   设备还在台账里 = 这个地址被占着；不再用了就从台账删掉，地址自然回到空闲。
+ *
+ * 返回项：ip = 本行代表的那一个地址；ip_in / ip_extra = 两个原始列（可能为空）；
+ *        net = 'in' | 'out'；同一台设备两列填成同一个地址时只出一行。
  */
 function ipList() {
   if (!ensure()) return [];
   try {
-    return issueDb.getDb().prepare(
+    const rows = issueDb.getDb().prepare(
       `SELECT id, asset_no, hostname, stat_category, model, nature,
               department, location, ip, ip_extra, mac, src_sheet
        FROM terminals
-       WHERE TRIM(ip) <> ''
+       WHERE TRIM(ip) <> '' OR TRIM(ip_extra) <> ''
        ORDER BY id ASC`
-    ).all().map((r) => ({
-      terminal_id: Number(r.id),
-      name: displayName(r) || ('设备 #' + r.id),
-      kind: kindOf(r),
-      stat_category: r.stat_category || '',
-      model: r.model || '',
-      nature: r.nature || '',
-      department: r.department || '',
-      location: r.location || '',
-      ip: String(r.ip || '').trim(),
-      ip_extra: r.ip_extra || '',
-      mac: r.mac || '',
-      hostname: r.hostname || '',
-      asset_no: r.asset_no || '',
-    }));
+    ).all();
+    const out = [];
+    rows.forEach((r) => {
+      const base = {
+        terminal_id: Number(r.id),
+        name: displayName(r) || ('设备 #' + r.id),
+        kind: kindOf(r),
+        stat_category: r.stat_category || '',
+        model: r.model || '',
+        nature: r.nature || '',
+        department: r.department || '',
+        location: r.location || '',
+        ip_in: String(r.ip || '').trim(),
+        ip_extra: String(r.ip_extra || '').trim(),
+        mac: r.mac || '',
+        hostname: r.hostname || '',
+        asset_no: r.asset_no || '',
+      };
+      if (base.ip_in) out.push(Object.assign({}, base, { ip: base.ip_in, net: 'in' }));
+      if (base.ip_extra && base.ip_extra !== base.ip_in) {
+        out.push(Object.assign({}, base, { ip: base.ip_extra, net: 'out' }));
+      }
+    });
+    return out;
   } catch (e) {
     console.warn('[terminals] 读取终端 IP 清单失败（IP 管理仍可用）：' + ((e && e.message) || e));
     return [];

@@ -222,6 +222,56 @@ try {
   const updDup = ipam.updateIp(db.prepare('SELECT id FROM ip_records WHERE segment_id = ? AND ip = ?').get(segId, T_DUP).id,
     { note: '历史重复，改备注应该允许' });
   ok('这种历史重复记录仍然能改（不会被永久锁死）', updDup.ok === true, updDup.error);
+
+  /* ---------------- ⑧ 台账「外网地址」列同样并进网段 ----------------
+   * 用户报的原始现象：一台机器台账里只填了「外网地址 10.10.10.94」（内网地址空），
+   * 建好 10.10.10.0/24 后这个段一个设备都没关联上。根因是 ipList 只按 ip 取。
+   * 这里钉住三件事：只填外网也能进列表 / 也算占用 / 手工登记会被拒。
+   */
+  console.log('\n== ⑧ 外网地址（办公网）也要并进网段 ==');
+  const T_WAN = '10.99.30.9';
+  // 先拍一份统计（造设备之前），后面的差值才是「这个外网地址带来的变化」
+  const beforeWan = ipam.listSegments().list.filter((x) => x.id === segId)[0];
+  const wanTerm = mkTerm({
+    hostname: 'ZS-OFFICE-0901', ip: '', ip_extra: T_WAN, department: '财务科', location: '行政楼2层',
+  });
+  const wanRows = term.ipList().filter((t) => t.terminal_id === wanTerm);
+  eq('ipList 对「只填外网」的设备也出一条（net=out）', wanRows.map((t) => t.net), ['out']);
+
+  const wanRow = ipam.listIps({ pageSize: 200, keyword: T_WAN }).list.filter((r) => r.ip === T_WAN)[0];
+  ok('IP 登记列表里能看到这个外网地址', !!wanRow);
+  eq('标成外网', wanRow && wanRow.net, 'out');
+  ok('备注点明是「外网地址」', !!wanRow && wanRow.note.indexOf('外网地址') >= 0, wanRow && wanRow.note);
+  eq('id 用 tx 前缀，与内网那条不撞', wanRow && wanRow.id, 'tx' + wanTerm);
+  eq('落进自测网段', wanRow && Number(wanRow.segment_id), segId);
+  eq('外网行不再重复挂 ip_extra（否则备注里同一个值出现两次）', wanRow && wanRow.ip_extra, '');
+
+  const afterWan = ipam.listSegments().list.filter((x) => x.id === segId)[0];
+  eq('网段剩余数少 1（外网地址也算占用）', beforeWan.free_count - afterWan.free_count, 1);
+  eq('网段终端占用 +1', afterWan.terminal - beforeWan.terminal, 1);
+  eq('未登记占用 +1（terminal_only）', afterWan.terminal_only - beforeWan.terminal_only, 1);
+  ok('空闲地址里排除了外网地址',
+    ipam.freeIpsOfSegment(segId, 100).ips.indexOf(T_WAN) < 0);
+  const mapWan = ipam.segmentMap(segId).cells.filter((c) => c.ip === T_WAN)[0];
+  ok('分布图该格是「已使用」', mapWan && mapWan.state === 'used', mapWan && mapWan.state);
+  ok('悬停提示点明是外网地址', !!mapWan && mapWan.tip.indexOf('外网地址') >= 0, mapWan && mapWan.tip);
+
+  const dupWan = ipam.createIp({ segment_id: segId, ip: T_WAN });
+  ok('手工登记一个已被台账外网地址占用的 IP → 拒绝', dupWan.ok === false, dupWan.error);
+  ok('拒绝理由里说明是外网地址', (dupWan.error || '').indexOf('外网地址') >= 0, dupWan.error);
+
+  // 一台设备两列都填、且同在一个网段：必须是两行、两个 id，不能只剩一行
+  const T_BI = '10.99.30.10';
+  const T_BO = '10.99.30.11';
+  mkTerm({ hostname: 'ZS-BOTH-1011', ip: T_BI, ip_extra: T_BO, department: '检验科', location: '医技楼3层' });
+  const bothRows = ipam.listIps({ pageSize: 200, keyword: 'ZS-BOTH-1011' }).list;
+  eq('两列都填 → 两条记录', bothRows.length, 2);
+  eq('两条的 net 分别是 in / out', bothRows.map((r) => r.net).sort(), ['in', 'out']);
+  eq('两条 id 互不相同（否则 Vue 会把两行认成一行）', new Set(bothRows.map((r) => r.id)).size, 2);
+  eq('两个地址各占一格', ipam.freeIpsOfSegment(segId, 100).ips.filter((ip) => ip === T_BI || ip === T_BO).length, 0);
+  const kwIn = ipam.listIps({ pageSize: 200, keyword: T_BO }).list;
+  eq('搜外网地址只命中外网那一行（不会内外各出一行）',
+    kwIn.filter((r) => r.ip === T_BO).length, 1);
 } catch (e) {
   fail++;
   console.log('\n[异常] ' + (e && e.stack ? e.stack : e));

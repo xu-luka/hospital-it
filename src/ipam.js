@@ -258,6 +258,13 @@ function usedSetOf(segmentId) {
  * ★ 2026-10-30 表结构重建后，台账里**没有「状态/报废」这一项**了（Excel 没有这列），
  *   所以这里不再区分「是否已释放」：设备在台账里 = 地址被占着；
  *   机器不用了就从台账删掉，地址自然回到空闲。
+ *
+ * ★ 台账的「外网地址」列同样要并进来（2026-10-30 修）：
+ *   院内说的「外网」= 办公网，「内网」= 医疗业务网，两列都是真实占用着的地址。
+ *   只按 `ip` 合并的话，一台机器只填了办公网地址（如 10.10.10.94）就完全进不来 ——
+ *   用户建好 10.10.10.0/24 后看到的是「已登记 0、剩余 0」的空段，来报「没关联」。
+ *   现在 ipList 把两列摊成两行（net='in'/'out'），本模块一视同仁地算占用，
+ *   只是虚拟记录多带一个 net，界面据此把外网那条标成「终端·外网」。
  */
 
 /** 读终端资产里「有 IP」的记录。任何异常都降级成空数组 —— IP 管理不能因此不可用。 */
@@ -291,29 +298,39 @@ function terminalAt(ip, exceptIp) {
   return hits.length ? { first: hits[0], count: hits.length, all: hits } : null;
 }
 
-/** 拼一句人话：「门诊3号诊室工作站（门诊部 / 门诊楼3层3诊室）」 */
+/** 拼一句人话：「门诊3号诊室工作站（门诊部 / 门诊楼3层3诊室）·外网地址」 */
 function terminalLabel(t) {
   if (!t) return '';
   const where = [t.department, t.location].filter(Boolean).join(' / ');
-  return '「' + t.name + '」' + (where ? '（' + where + '）' : '');
+  // 外网地址那条要点明是哪一列的地址 —— 否则用户会以为这台机器的「内网地址」是 10.10.10.94
+  return '「' + t.name + '」' + (where ? '（' + where + '）' : '')
+    + (t.net === 'out' ? '·外网地址' : '');
 }
 
 /**
  * 终端资产 → 一条虚拟的「IP 登记」记录。
- * id 用字符串 't<设备id>'：前端 v-for 的 key 需要唯一，而数值 id 会跟 ip_records 的 id 撞上
- * （撞上之后的后果是：删除一条手工登记，界面上删掉的是另一台终端）。
+ * id 用字符串 't<设备id>'（外网地址那条用 'tx<设备id>'）：前端 v-for 的 key 需要唯一，
+ * 而数值 id 会跟 ip_records 的 id 撞上（撞上之后的后果是：删除一条手工登记，界面上删掉的是另一台终端）。
+ * 同一台设备的两条记录也必须不同 id，否则列表里两行会被 Vue 认成同一行。
  */
 function shapeTerminalRecord(t, seg) {
   const segName = seg ? (seg.name || '') : '';
+  const isOut = t.net === 'out';
+  const where = [t.department, t.location].filter(Boolean).join(' / ');
   return {
-    id: 't' + t.terminal_id,
+    id: (isOut ? 'tx' : 't') + t.terminal_id,
     source: 'terminal',
     terminal_id: t.terminal_id,
+    /* 这一行代表的是哪一类地址：in = 内网地址（医疗网），out = 外网地址（办公网）。
+       两者都参与占用统计 —— 都是院内真实被占的地址，只是登记在台账的不同列。 */
+    net: isOut ? 'out' : 'in',
     segment_id: seg ? seg.id : 0,
     segment_name: segName,
     segment_cidr: seg ? seg.cidr : '',
     ip: t.ip,
-    ip_extra: t.ip_extra || '',
+    /* 外网那条自身就是外网地址，若再带 ip_extra，界面会在备注里又标一次「外网 x」，
+       变成「外网 10.10.10.94 / 外网 10.10.10.94」式的重复 —— 所以外网行留空。 */
+    ip_extra: isOut ? '' : (t.ip_extra || ''),
     ip_num: parseIp(t.ip) === null ? 0 : parseIp(t.ip),
     status: 'used',
     status_label: '已使用',
@@ -322,17 +339,16 @@ function shapeTerminalRecord(t, seg) {
     // 台账 21 列里没有「责任人」，留空字段保证前端不用改判断分支
     owner: '',
     device_type: t.kind || '',
-    note: '终端资产 · ' + [t.department, t.location].filter(Boolean).join(' / '),
+    note: '终端资产 · ' + (isOut ? '外网地址 · ' : '') + where,
     created_at: '',
     updated_at: '',
     device: {
       id: t.terminal_id, name: t.name, kind: t.kind,
       department: t.department, location: t.location, hostname: t.hostname,
       stat_category: t.stat_category || '', model: t.model || '',
-      /* 台账「外网地址」列：这里也要带出去，IP 登记表才能在那一行标注出来。
-         注意它只是**展示**用的标注 —— 外网地址不属于任何内网网段，
-         绝不能塞进 ip_records 或参与占用/空闲统计（会多算一个不存在的地址）。 */
-      ip_extra: t.ip_extra || '',
+      /* 台账「外网地址」列：内网那条要在备注里带出来（这台机器还有哪个办公网地址），
+         外网那条自己就是，不再重复。 */
+      ip_extra: isOut ? '' : (t.ip_extra || ''),
     },
   };
 }
@@ -424,6 +440,13 @@ function trim(v, max) {
 function shapeSegment(row, stats) {
   if (!row) return null;
   const c = parseCidr(row.cidr);
+  /* ★ 没登记过、也没有终端占用的网段，segmentStats() 里根本没有这个 key（它是按
+     segment_id 分组出来的）。原先这里直接用 `stats && c ? … : 0`，于是「一条都没登记」
+     的网段被算成 free_count = 0 —— 界面上写「已登记 0 · 剩余 0」，
+     用户看到的就是「这个网段是空的、一个地址都没有」，完全不敢往里加设备
+     （2026-10-30 用户就是拿这个当证据说 10.10.10.0/24 没关联上终端）。
+     缺省应当是「满额空闲」：hostCount - 0 - 0。 */
+  const st = stats || { registered: 0, used: 0, conflict: 0, terminal: 0, terminal_only: 0 };
   return {
     id: row.id,
     name: row.name || '',
@@ -441,16 +464,16 @@ function shapeSegment(row, stats) {
     note: row.note || '',
     created_at: row.created_at || '',
     updated_at: row.updated_at || '',
-    registered: stats ? stats.registered : 0,
-    used: stats ? stats.used : 0,
-    conflict: stats ? stats.conflict : 0,
-    free_count: stats && c
-      ? Math.max(0, c.hostCount - stats.registered - (stats.terminal_only || 0))
+    registered: st.registered || 0,
+    used: st.used || 0,
+    conflict: st.conflict || 0,
+    free_count: c
+      ? Math.max(0, c.hostCount - (st.registered || 0) - (st.terminal_only || 0))
       : 0,
-    // 终端资产里登记了 IP、且落在这个网段里的设备数（只读联动，不落库）
-    terminal: stats ? (stats.terminal || 0) : 0,
+    // 终端资产里登记了 IP、且落在这个网段里的地址数（只读联动，不落库；内网 + 外网各算一个）
+    terminal: st.terminal || 0,
     // 其中「没在本网段手工登记过」的那部分 —— 空闲地址计算要扣掉的就是它
-    terminal_only: stats ? (stats.terminal_only || 0) : 0,
+    terminal_only: st.terminal_only || 0,
   };
 }
 
@@ -635,8 +658,10 @@ function removeSegment(id) {
 function terminalMatch(t, kw) {
   if (!kw) return true;
   const k = kw.toLowerCase();
+  /* 搜「本行代表的那个地址」+ 设备身份字段。刻意**不搜** ip_extra：
+     外网地址现在自己就有一行，把它也算进内网那行的搜索范围，搜一个地址会出两行。 */
   return [t.ip, t.name, t.hostname, t.mac, t.kind, t.stat_category, t.model,
-    t.department, t.location, t.ip_extra, t.asset_no].join(' ').toLowerCase().indexOf(k) >= 0;
+    t.department, t.location, t.asset_no].join(' ').toLowerCase().indexOf(k) >= 0;
 }
 
 // 合并模式下「取全量再切片」的上限。超过这个量说明手工登记本身已经过万，
