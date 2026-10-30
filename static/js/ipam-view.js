@@ -173,7 +173,7 @@
 
         <div class="card card-flush">
           <div class="table-wrap">
-            <table class="tbl ip-table">
+            <table class="tbl ip-table ip-reg">
               <thead>
                 <tr>
                   <th class="c-ip">IP 地址</th>
@@ -214,7 +214,16 @@
                   <!-- 类型优先显示台账的「统计类别」（台式计算机 / 黑白打印机），比大类的「PC」具体 -->
                   <td><span class="cell-sub">{{ (r.device && r.device.stat_category) || r.device_type || '—' }}</span></td>
                   <td><span class="mono">{{ r.mac || '—' }}</span></td>
-                  <td><span class="cell-sub">{{ r.note || '—' }}</span></td>
+                  <td>
+                    <span class="cell-sub">{{ r.note || '—' }}</span>
+                    <!-- 台账里填了「外网地址」的设备必须在这里也标出来。
+                         外网地址不属于任何内网网段，不会单独成为一条登记记录，
+                         不标注的话用户在 IP 管理里怎么翻都看不到那台机器的外网地址，
+                         结论就是「外网地址没写进去」。 -->
+                    <span v-if="wanOf(r)" class="cell-sub mono is-wan" :title="'外网地址 ' + wanOf(r)">
+                      外网 {{ wanOf(r) }}
+                    </span>
+                  </td>
                   <td class="ops">
                     <!-- 终端资产那条：只在终端资产里维护，这里不给编辑/删除，
                          否则会出现「这边删了、那边还在」的两份数据 -->
@@ -250,6 +259,10 @@
             标了「终端」的这些行来自【终端资产】台账，是<b>自动同步</b>过来的，不会写进本页的登记表 ——
             设备改了 IP 或删除了，这里立刻跟着变。也因此不需要再手工登记一遍（会被拒绝并提示是哪台设备）。
             要让某个地址释放出来，请到终端资产把那台设备的「内网地址」清掉，或者直接删掉那台设备。
+            <br>
+            备注列里橙色那行是这个设备在台账里填的<b>外网地址</b>。它不属于任何内网网段，所以不参与占用统计，
+            也不会单独占一行 —— 只做标注。只填了外网、内网地址为空的设备在本页不会出现，
+            要核对它们请在【终端资产】的搜索框里直接输外网地址。
           </div>
           <div class="hint" v-if="mergeNote">{{ mergeNote }}</div>
         </div>
@@ -646,6 +659,11 @@
         return 'ip-fill';
       },
       badgeOf(status) { return STATUS_BADGE[status] || 'muted'; },
+      /** 终端行的外网地址（台账「外网地址」列）。手工登记的记录没有这个字段，返回空。 */
+      wanOf(r) {
+        if (!r) return '';
+        return r.ip_extra || (r.device && r.device.ip_extra) || '';
+      },
       segmentLabel(id) {
         if (!id) return '不在已登记网段';
         const s = this.segs.filter((x) => x.id === id)[0];

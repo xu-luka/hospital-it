@@ -3057,12 +3057,28 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-base); }
 /* IP 登记表的列 */
 .ip-table .c-ip    { width: 152px; }
 .ip-table .c-st    { width: 84px; }
-.ip-table .c-host  { width: 180px; }
+.ip-table .c-host  { width: 150px; }
 .ip-table .c-owner { width: 130px; }
 .ip-table .c-type  { width: 110px; }
 .ip-table .c-mac   { width: 150px; }
-.ip-table .c-note  { width: 160px; }
+/* 备注列要装两行：台账的「科室 / 位置」，以及终端行的橙色「外网 x.x.x.x」。
+   160px 只够第一行，外网那行会被 ellipsis 吃掉 —— 等于没标注。 */
+.ip-table .c-note  { width: 196px; }
 .ip-table .c-ops   { width: 210px; }
+
+/* ★ IP 登记表单独收窄（2026-10-30）：它只有 8 列，1110px 就装得下，
+   而共用的 min-width 是 1210px（网段表要那么宽）—— 结果这里白白多出 68px 横向滚动，
+   最右边的操作列被推出可视区，用户以为「查看设备」那个按钮没了。
+   列宽之和 1100 ≤ min-width，容器比它宽时按比例分配，不会出现滚动条。 */
+.ip-table.ip-reg { min-width: 1100px; }
+.ip-table.ip-reg .c-ip    { width: 136px; }
+.ip-table.ip-reg .c-st    { width: 72px; }
+.ip-table.ip-reg .c-host  { width: 146px; }
+.ip-table.ip-reg .c-owner { width: 116px; }
+.ip-table.ip-reg .c-type  { width: 104px; }
+.ip-table.ip-reg .c-mac   { width: 142px; }
+.ip-table.ip-reg .c-note  { width: 196px; }
+.ip-table.ip-reg .c-ops   { width: 188px; }
 
 /* 来源标记：这一行来自【终端资产】台账（只读同步，不是本页登记的）。
    用 info 蓝跟「已使用」同一个色系，不再引入新颜色 —— 地图上的「已使用」格同理。 */
@@ -3381,25 +3397,31 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-base); }
    超出 .table-wrap 的那几十像素正好把操作列最后一个「删除」裁在屏幕外 ——
    而 ellipsis 也只有在 fixed 下才生效（.cell-sub 的 overflow:hidden 需要确定的列宽）。
    列宽之和 = min-width，两处改一处忘一处就会出横向滚动条。 */
-.term-table { table-layout: fixed; min-width: 1142px; }
+/* ★ 2026-10-30 外网地址改成独立一列（台账第 11 列），七列变八列，列宽重算。
+   列宽之和 1136 = min-width，两处改一处忘一处就会出横向滚动条。
+   留 6px 余量是给预览页/不同 DPI 的：刚好等于容器宽时，子像素取整会挤出 1~2px 的滚动条。 */
+.term-table { table-layout: fixed; min-width: 1136px; }
 .term-table td { white-space: nowrap; }
 .term-table .cell-strong,
 .term-table .cell-sub { display: block; overflow: hidden; text-overflow: ellipsis; }
-.term-table .c-dev { width: 216px; }
-.term-table .c-cat { width: 96px; }
-.term-table .c-dept { width: 186px; }
-.term-table .c-ip { width: 156px; }
-.term-table .c-spec { width: 168px; }
-.term-table .c-issue { width: 88px; }
+.term-table .c-dev { width: 182px; }
+.term-table .c-cat { width: 88px; }
+.term-table .c-dept { width: 172px; }
+.term-table .c-ip { width: 126px; }
+.term-table .c-wan { width: 128px; }
+.term-table .c-spec { width: 138px; }
+.term-table .c-issue { width: 70px; }
 /* 未结工单数：跟「3 次」分两行放，挤成一行就会把列撑开（这列只有 88px） */
 .term-table .cell-sub.term-open { color: var(--bad); }
 /* 操作列按「最多四个 btn-sm」定宽：报修 / 详情 / 编辑 / 删除。
    再往里塞第五个就会被裁掉半个 —— 功能不可见等于没有，宁可另开一个入口。 */
 .term-table .c-ops { width: 232px; }
 
-/* 只登记了外网地址、没有内网地址的行：地址用提示色 + 「外网」前缀，
-   别让它看起来跟内网地址一样（IP 管理和网段统计只认内网地址，混着看会算错账） */
-.term-table .mono.is-wan { color: var(--warn); }
+/* 只登记了外网地址、没有内网地址的行：地址用提示色，别让它看起来跟内网地址一样
+   （IP 管理和网段统计只认内网地址，混着看会算错账）。
+   ★ 2026-10-30 从 `.term-table .mono.is-wan` 放宽到 `.tbl .mono.is-wan`：
+     IP 登记表的备注列现在也要标「外网 x.x.x.x」，只写在 term-table 里那边不生效。 */
+.tbl .mono.is-wan { color: var(--warn); }
 
 /* 「配置 / 耗材」列：主行放操作系统（或耗材型号），副行放 CPU/内存。
    合成一行「Windows 10 专业版 · i5-9500」需要 197px，而这列只有 168px，

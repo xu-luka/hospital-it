@@ -115,15 +115,16 @@
                 <th class="c-cat">统计类别</th>
                 <th class="c-dept">科室 / 位置</th>
                 <th class="c-ip">内网地址</th>
+                <th class="c-wan">外网地址</th>
                 <th class="c-spec">配置 / 耗材</th>
                 <th class="c-issue">报修</th>
                 <th class="c-ops">操作</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-if="loading"><td colspan="7" class="empty-row">加载中…</td></tr>
+              <tr v-if="loading"><td colspan="8" class="empty-row">加载中…</td></tr>
               <tr v-else-if="!list.length">
-                <td colspan="7" class="empty-row">
+                <td colspan="8" class="empty-row">
                   没有符合条件的设备。{{ canManage ? '点右上角「新增设备」录入，或「导入」Excel 台账。' : '请联系管理员录入。' }}
                 </td>
               </tr>
@@ -148,11 +149,17 @@
                     {{ [r.floor, r.location].filter(Boolean).join(' ') || '未填位置' }}
                   </span>
                 </td>
-                <td>
-                  <!-- 内网地址优先；只填了外网地址（打印机、自助机常见）就把它顶上来 ——
-                       否则这一列只剩一个「—」，用户会得出「我明明填了地址，导入却没写进来」的结论 -->
-                  <span class="mono" :class="{ 'is-wan': !r.ip && r.ip_extra }" :title="ipTitle(r)">{{ ipMain(r) }}</span>
-                  <span class="cell-sub mono" v-if="ipSub(r)" :class="{ 'is-wan': r.ip && r.ip_extra }" :title="ipTitle(r)">{{ ipSub(r) }}</span>
+                <td class="c-ip">
+                  <!-- 内网地址只放内网：外网地址是另一列，别再往下堆第二行 ——
+                       两行挤在同一列时，用户核对「这台到底有没有外网」只能靠悬停猜 -->
+                  <span class="mono" :title="r.ip ? '内网地址 ' + r.ip : '未登记内网地址'">{{ r.ip || '—' }}</span>
+                  <span class="cell-sub mono" v-if="r.mac" :title="'MAC ' + r.mac">{{ r.mac }}</span>
+                </td>
+                <td class="c-wan">
+                  <!-- 独立一列：Excel 里「外网地址」本来就是一列，导入后必须能单独核对到。
+                       没有外网就给「—」，不再借用内网那一列 -->
+                  <span v-if="r.ip_extra" class="mono is-wan" :title="'外网地址 ' + r.ip_extra">{{ r.ip_extra }}</span>
+                  <span v-else class="muted">—</span>
                 </td>
                 <td>
                   <span class="cell-strong spec-text" :title="specTitle(r)">{{ specMain(r) }}</span>
@@ -544,32 +551,6 @@
         if (!r) return '';
         const all = [r.os, r.cpu, r.ram, r.disk, r.monitor, r.consumable ? '耗材 ' + r.consumable : ''];
         return all.filter(Boolean).join(' · ');
-      },
-
-      /**
-       * 列表第 4 列拆两行：主行内网地址，副行外网地址（没有外网就给 MAC）。
-       * 只有外网地址没有内网地址时，把外网顶到主行并标注「外网」——
-       * 这一列原本只看 ip，只填了外网的设备会显示成「—」，看起来就像「导入没写进来」。
-       */
-      ipMain(r) {
-        if (!r) return '—';
-        if (r.ip) return r.ip;
-        if (r.ip_extra) return '外网 ' + r.ip_extra;
-        return '—';
-      },
-      ipSub(r) {
-        if (!r) return '';
-        if (r.ip && r.ip_extra) return '外网 ' + r.ip_extra;
-        return r.mac || '';
-      },
-      /** 悬停看全：内外网 + MAC 三样都摆出来，省得为了核对一个 MAC 去开详情 */
-      ipTitle(r) {
-        if (!r) return '';
-        const parts = [];
-        if (r.ip) parts.push('内网 ' + r.ip);
-        if (r.ip_extra) parts.push('外网 ' + r.ip_extra);
-        if (r.mac) parts.push('MAC ' + r.mac);
-        return parts.length ? parts.join(' ｜ ') : '未登记地址';
       },
 
       /** 详情按组显示，全空的一组直接不显示（手工录的空设备不会变成一整屏「—」） */

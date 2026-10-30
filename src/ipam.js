@@ -313,6 +313,7 @@ function shapeTerminalRecord(t, seg) {
     segment_name: segName,
     segment_cidr: seg ? seg.cidr : '',
     ip: t.ip,
+    ip_extra: t.ip_extra || '',
     ip_num: parseIp(t.ip) === null ? 0 : parseIp(t.ip),
     status: 'used',
     status_label: '已使用',
@@ -328,6 +329,10 @@ function shapeTerminalRecord(t, seg) {
       id: t.terminal_id, name: t.name, kind: t.kind,
       department: t.department, location: t.location, hostname: t.hostname,
       stat_category: t.stat_category || '', model: t.model || '',
+      /* 台账「外网地址」列：这里也要带出去，IP 登记表才能在那一行标注出来。
+         注意它只是**展示**用的标注 —— 外网地址不属于任何内网网段，
+         绝不能塞进 ip_records 或参与占用/空闲统计（会多算一个不存在的地址）。 */
+      ip_extra: t.ip_extra || '',
     },
   };
 }
