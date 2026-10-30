@@ -267,7 +267,166 @@ function d(offset) {
   eq('★ 工单标题保留着设备名线索', issueAfterDel.json.data.issue.title, '打印机卡纸打不出来');
   eq('重复删除 → 404', (await call('admin', 'DELETE', '/api/terminals/' + t2)).status, 404);
 
+  console.log('\n== Excel 导入 / 导出 ==');
+  const XLSX = require(path.join(ROOT, 'node_modules', 'xlsx'));
+
+  /** multipart 上传（Node 22 自带 FormData/Blob，不用额外依赖） */
+  async function upload(who, url, buf, name) {
+    const fd = new FormData();
+    fd.append('file', new Blob([buf]), name || 'test.xlsx');
+    const headers = {};
+    if (who) headers.Authorization = 'Bearer ' + tokens[who];
+    const res = await fetch(base + url, { method: 'POST', headers, body: fd });
+    let json = null;
+    try { json = await res.json(); } catch (e) { json = null; }
+    return { status: res.status, json, raw: JSON.stringify(json) };
+  }
+
+  // 造一份结构与院里那份台账一致的样例：两个 sheet 列数不同，外加一个「填写说明」表
+  const PC_HEADER = ['院区', '资产编码', '区域', '楼层', '科室', '位置', '统计类别', '设备性质',
+    '工作组/计算机名', '内网地址', '外网地址', 'MAC', 'SN码', '生产日期', '型号',
+    '操作系统', 'CPU', '硬盘', '内存', '显示器尺寸'];
+  const PRT_HEADER = ['院区', '资产编码', '区域', '楼层', '科室', '位置', '统计类别', '设备性质',
+    '内网地址', '外网地址', 'MAC', 'SN码', '生产日期', '型号', '耗材型号'];
+
+  const pcRows = [
+    PC_HEADER,
+    ['珠江街道', '0104020101620', '门诊楼', '三楼', '财务科', '医生办（一）', '台式计算机', '政府采购设备',
+      'PC-20180817RHBE', '200.100.60.34', '10.10.10.248', '80-3F-5D-08-F9-55', 'M706TL9J', '2018-06-02',
+      '启天M410-N000', 'Windows 10', 'Intel Core i5-7500', '256G+1T', 'DDR4 - 8G', "Lenovo-LCD 20'"],
+    ['珠江街道', '-', '医技楼', '二楼', '检验科', 'LIS 工作站', '台式计算机', '租赁设备',
+      'DESKTOP-3TQGIDB', '200.100.60.25', '-', '内网：F4-6B-8C-02-80-48', 'ABC12345', '2021-10-02',
+      'Dell OptiPlex 3080', 'Windows 7', 'Intel Pentium G4500', '500G', 'DDR3 - 8G', "Hp-LCD 24'"],
+  ];
+  const prtRows = [
+    PRT_HEADER,
+    ['珠江街道', '0104020101686', '住院楼', '三楼', '住院儿科', '护士站（一）', '黑白打印机', '租赁设备',
+      '200.100.60.37', '-', '04-0E-3C-E2-A6-14', 'B6S01A', '2023-07-10', 'Epson M101', 'T7741'],
+    ['珠江街道', '-', '住院楼', '三楼', '住院儿科', '护士站（二）', '二维码扫描枪', '设备自带',
+      '-', '-', 'F8:D0:27:20:56:0C', '-', '-', '科密 YX-18+', '-'],
+  ];
+
+  function buildBook() {
+    const wb = XLSX.utils.book_new();
+    const mk = (rows) => {
+      const ws = XLSX.utils.aoa_to_sheet(rows);
+      return ws;
+    };
+    XLSX.utils.book_append_sheet(wb, mk(pcRows), '计算机');
+    XLSX.utils.book_append_sheet(wb, mk(prtRows), '打印机');
+    XLSX.utils.book_append_sheet(wb, mk([['填写说明'], ['这是说明表，没有台账字段，应被跳过']]), '填写说明');
+    return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  }
+
+  const beforeTotal = (await call('admin', 'GET', '/api/terminals')).json.data.stats.total;
+
+  const dry = await upload('admin', '/api/terminals/import?dryRun=1', buildBook());
+  eq('预导入（dryRun）→ 200', dry.status, 200);
+  eq('预导入识别出 4 条', dry.json.data.total, 4);
+  eq('预导入报告新增 4 条', dry.json.data.created, 4);
+  eq('★ dryRun 不落库：总数没变', (await call('admin', 'GET', '/api/terminals')).json.data.stats.total, beforeTotal);
+  eq('★ 没被认出的「填写说明」表被跳过', (dry.json.data.sheets_scanned || []).filter((s) => s.skipped).length, 1);
+
+  const imp = await upload('admin', '/api/terminals/import', buildBook());
+  eq('正式导入 → 200', imp.status, 200);
+  eq('新增 4 条', imp.json.data.created, 4);
+  eq('总数 +4', (await call('admin', 'GET', '/api/terminals')).json.data.stats.total, beforeTotal + 4);
+
+  const fin = (await call('admin', 'GET', '/api/terminals?keyword=' + encodeURIComponent('PC-20180817RHBE'))).json.data.list[0];
+  eq('★ 计算机行：统计类别原样保留', fin.stat_category, '台式计算机');
+  eq('★ 类型由统计类别推导（台式计算机 → PC）', fin.kind, 'PC');
+  eq('院区 / 区域 / 楼层都落库', [fin.campus, fin.area, fin.floor].join('|'), '珠江街道|门诊楼|三楼');
+  eq('工作组/计算机名落库', fin.hostname, 'PC-20180817RHBE');
+  eq('内外网两个地址分开存', fin.ip + '|' + fin.ip_extra, '200.100.60.34|10.10.10.248');
+  eq('生产日期规范化成 YYYY-MM-DD', fin.produce_date, '2018-06-02');
+  eq('硬件明细落库（CPU/硬盘/内存/显示器）',
+    [fin.cpu, fin.disk, fin.ram, fin.monitor].join(' | '),
+    "Intel Core i5-7500 | 256G+1T | DDR4 - 8G | Lenovo-LCD 20'");
+  eq('设备名称由「科室+位置」自动拼', fin.name, '财务科 医生办（一）');
+
+  const prt = (await call('admin', 'GET', '/api/terminals?keyword=' + encodeURIComponent('护士站（一）'))).json.data.list[0];
+  eq('打印机行：耗材型号落库', prt.consumable, 'T7741');
+  eq('打印机的类型归到「打印机」', prt.kind, '打印机');
+
+  const dash = (await call('admin', 'GET', '/api/terminals?keyword=' + encodeURIComponent('LIS 工作站'))).json.data.list[0];
+  eq('★ 「-」按空处理（资产编码）', dash.asset_no, '');
+  eq('★ MAC 的「内网：」前缀被剥掉并统一成横杠', dash.mac, 'F4-6B-8C-02-80-48');
+  eq('★ 冒号分隔的 MAC 也归一成横杠', (await call('admin', 'GET', '/api/terminals?keyword=' + encodeURIComponent('科密'))).json.data.list[0].mac,
+    'F8-D0-27-20-56-0C');
+  eq('扫码枪的类型靠「扫描」识别', (await call('admin', 'GET', '/api/terminals?keyword=' + encodeURIComponent('科密'))).json.data.list[0].kind, '扫码枪');
+
+  const again = await upload('admin', '/api/terminals/import', buildBook());
+  eq('★ 同一份再导一次：0 新增', again.json.data.created, 0);
+  eq('★ 同一份再导一次：4 条全部「无变化」', again.json.data.unchanged, 4);
+  eq('★ 没有产生重复记录', (await call('admin', 'GET', '/api/terminals')).json.data.stats.total, beforeTotal + 4);
+
+  // 改一处位置再导：应更新而不是新增；空的单元格不能把已有值洗掉
+  const changedRows = pcRows.map((r) => r.slice());
+  changedRows[1][5] = '医生办（二）';
+  changedRows[1][8] = '';           // 计算机名留空 → 不许把已有的 PC-20180817RHBE 清掉
+  const wb2 = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb2, XLSX.utils.aoa_to_sheet(changedRows), '计算机');
+  const upd = await upload('admin', '/api/terminals/import', XLSX.write(wb2, { type: 'buffer', bookType: 'xlsx' }));
+  eq('改位置后导入：不新增', upd.json.data.created, 0);
+  eq('改位置后导入：更新 1 条', upd.json.data.updated, 1);
+  const afterUpd = (await call('admin', 'GET', '/api/terminals?keyword=' + encodeURIComponent('PC-20180817RHBE'))).json.data.list[0];
+  eq('位置已更新', afterUpd.location, '医生办（二）');
+  eq('★ 空单元格没有洗掉已有值（计算机名还在）', afterUpd.hostname, 'PC-20180817RHBE');
+  ok('更新明细里列出了「位置」',
+    (upd.json.data.samples || []).some((s) => (s.changed || []).indexOf('位置') >= 0));
+
+  // MAC 换个写法（冒号）再导，不该被当成新设备
+  const colonRows = prtRows.map((r) => r.slice());
+  colonRows[1][10] = '04:0e:3c:e2:a6:14';
+  const wb3 = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb3, XLSX.utils.aoa_to_sheet(colonRows), '打印机');
+  const colon = await upload('admin', '/api/terminals/import', XLSX.write(wb3, { type: 'buffer', bookType: 'xlsx' }));
+  eq('★ MAC 换写法后仍然认出是同一台（0 新增）', colon.json.data.created, 0);
+  eq('★ 认出来之后算「无变化」', colon.json.data.unchanged, 2);
+
+  const skipMode = await upload('admin', '/api/terminals/import?mode=skip', buildBook());
+  eq('mode=skip：0 新增', skipMode.json.data.created, 0);
+  eq('mode=skip：4 条全部跳过', skipMode.json.data.skipped, 4);
+
+  const badFile = await upload('admin', '/api/terminals/import', Buffer.from('这不是 excel'), 'bad.xlsx');
+  eq('乱传一个文件 → 400', badFile.status, 400);
+  const noData = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(noData, XLSX.utils.aoa_to_sheet([['院区'], ['珠江街道']]), '空表');
+  const emptyIm = await upload('admin', '/api/terminals/import', XLSX.write(noData, { type: 'buffer', bookType: 'xlsx' }));
+  eq('只有「院区」没有数据行 → 400 并说明原因', emptyIm.status, 400);
+
+  // ---- 模板 / 导出 ----
+  const tpl = await call('admin', 'GET', '/api/terminals/template');
+  eq('模板下载 → 200', tpl.status, 200);
+  const exRes = await fetch(base + '/api/terminals/export', { headers: { Authorization: 'Bearer ' + tokens.admin } });
+  eq('导出 → 200', exRes.status, 200);
+  ok('导出返回 xlsx 的 Content-Type',
+    String(exRes.headers.get('content-type') || '').indexOf('spreadsheetml') >= 0);
+  ok('导出文件名带日期',
+    decodeURIComponent(String(exRes.headers.get('content-disposition') || '')).indexOf('.xlsx') > 0);
+  const exBuf = Buffer.from(await exRes.arrayBuffer());
+  const exWb = XLSX.read(exBuf, { type: 'buffer', cellDates: true });
+  const exAoa = XLSX.utils.sheet_to_json(exWb.Sheets[exWb.SheetNames[0]], { header: 1, defval: '' });
+  const exHead = exAoa[0].map((h) => String(h).trim());
+  ok('★ 导出表头与 Excel 台账列名一致（院区/统计类别/工作组/计算机名/MAC/SN码…）',
+    ['院区', '资产编码', '区域', '楼层', '科室', '位置', '统计类别', '设备性质',
+      '工作组/计算机名', '内网地址', '外网地址', 'MAC', 'SN码', '生产日期', '型号',
+      '操作系统', 'CPU', '硬盘', '内存', '显示器尺寸', '耗材型号'].every((h) => exHead.indexOf(h) >= 0));
+  eq('导出行数 = 表头 + 全量台账', exAoa.length - 1, (await call('admin', 'GET', '/api/terminals')).json.data.stats.total);
+  const exPc = exAoa.find((r) => r[exHead.indexOf('工作组/计算机名')] === 'PC-20180817RHBE');
+  ok('导出里能找到刚导进来的那台', !!exPc);
+  eq('导出保留了「统计类别」原词', exPc[exHead.indexOf('统计类别')], '台式计算机');
+
+  // 导出再导入：应全部「无变化」（round-trip 不产生重复）
+  const roundTrip = await upload('admin', '/api/terminals/import?dryRun=1', exBuf, 'roundtrip.xlsx');
+  eq('★ 导出文件原样再导入：0 新增', roundTrip.json.data.created, 0);
+  eq('★ 导出文件原样再导入：全部无变化', roundTrip.json.data.updated, 0);
+
+  const viewerImp = await upload('viewer', '/api/terminals/import', buildBook());
+  eq('★ 只读角色导入 → 403', viewerImp.status, 403);
+
   console.log('\n== 元数据接口 ==');
+
   const meta = await call('admin', 'GET', '/api/terminals/meta');
   eq('meta 返回 200', meta.status, 200);
   ok('meta 给了类型清单（含 PC / 打印机 / 自助机）',

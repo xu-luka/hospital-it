@@ -30,6 +30,83 @@ const STATUSES = ['在用', '备用', '维修中', '借出', '报废'];
 /** 保修提醒阈值（天）。与合同「到期提醒」的 30 天口径保持一致，避免两个地方说法不同 */
 const WARRANTY_SOON_DAYS = 30;
 
+/**
+ * 台账登记字段（对应信息科那份《信息设备台账》Excel 的列，逐个对齐、不改名）。
+ * 刻意保留 Excel 的原词（「统计类别」「设备性质」而不是自造「设备分类」），
+ * 因为导出的文件还要能被人拿回 Excel 里对着看，两边用词不一致会被当成两个字段。
+ *
+ * 与「系统自己用」的字段分开：
+ *   登记字段 = 台账里有的东西，导入时按列名直接落库；
+ *   系统字段 = 名称/类型/状态/责任人/保修至/备注，Excel 里没有，由系统维护。
+ */
+const EXCEL_COLUMNS = [
+  { key: 'campus', name: '院区' },
+  { key: 'asset_no', name: '资产编码' },
+  { key: 'area', name: '区域' },
+  { key: 'floor', name: '楼层' },
+  { key: 'department', name: '科室' },
+  { key: 'location', name: '位置' },
+  { key: 'stat_category', name: '统计类别' },
+  { key: 'nature', name: '设备性质' },
+  { key: 'hostname', name: '工作组/计算机名' },
+  { key: 'ip', name: '内网地址' },
+  { key: 'ip_extra', name: '外网地址' },
+  { key: 'mac', name: 'MAC' },
+  { key: 'sn', name: 'SN码' },
+  { key: 'produce_date', name: '生产日期', date: true },
+  { key: 'model', name: '型号' },
+  { key: 'os', name: '操作系统' },
+  { key: 'cpu', name: 'CPU' },
+  { key: 'disk', name: '硬盘' },
+  { key: 'ram', name: '内存' },
+  { key: 'monitor', name: '显示器尺寸' },
+  { key: 'consumable', name: '耗材型号' },
+];
+
+/** 系统字段：Excel 里没有，导出时追加在末尾（导入时也认这几列，便于导出→改→再导入） */
+const SYSTEM_COLUMNS = [
+  { key: 'name', name: '设备名称' },
+  { key: 'kind', name: '类型' },
+  { key: 'owner', name: '责任人' },
+  { key: 'status', name: '状态' },
+  { key: 'warranty_end', name: '保修至', date: true },
+  { key: 'purchase_date', name: '采购日期', date: true },
+  { key: 'brand', name: '品牌' },
+  { key: 'vendor', name: '供应商' },
+  { key: 'note', name: '备注' },
+];
+
+/** 全部可写字段（顺序即 INSERT / UPDATE 的列顺序，改一处两边同时生效） */
+const FIELDS = EXCEL_COLUMNS.map((c) => c.key).concat(SYSTEM_COLUMNS.map((c) => c.key));
+
+/** 「-」在这个台账里是「没有」的意思（原表大量用它占位），一律按空处理 */
+function isBlank(v) {
+  const s = trim(v);
+  return !s || s === '-' || s === '—' || s === '－' || s === '/';
+}
+
+/**
+ * 统计类别 → 系统里的类型。Excel 有 11 种统计类别，系统的 KINDS 是 11 个粗类，
+ * 两者不是一一对应（黑白/彩色/网络/针式/其他打印机都归「打印机」）。
+ * 原始值仍完整存在 stat_category 里，不丢信息。
+ */
+function kindOfStat(cat) {
+  const s = trim(cat);
+  if (!s) return 'PC';
+  if (KINDS.indexOf(s) >= 0) return s;              // 已经是系统类型词（导出再导入时）
+  if (/笔记本|便携/.test(s)) return '笔记本';
+  if (/一体机|多功能/.test(s)) return '一体机';
+  if (/打印机|复印机|传真/.test(s)) return '打印机';
+  if (/自助/.test(s)) return '自助机';
+  if (/叫号/.test(s)) return '叫号机';
+  if (/显示器|显示屏|大屏/.test(s)) return '显示屏';
+  if (/扫描|扫码/.test(s)) return '扫码枪';
+  if (/投影/.test(s)) return '投影';
+  if (/交换|路由|网关|防火墙/.test(s)) return '网络设备';
+  if (/台式|计算机|电脑|工作站/.test(s)) return 'PC';
+  return '其他';
+}
+
 let ready = false;
 let initError = '';
 
@@ -60,6 +137,23 @@ function ensure() {
         warranty_end TEXT NOT NULL DEFAULT '',
         vendor TEXT NOT NULL DEFAULT '',
         note TEXT NOT NULL DEFAULT '',
+        campus TEXT NOT NULL DEFAULT '',
+        area TEXT NOT NULL DEFAULT '',
+        floor TEXT NOT NULL DEFAULT '',
+        stat_category TEXT NOT NULL DEFAULT '',
+        nature TEXT NOT NULL DEFAULT '',
+        ip_extra TEXT NOT NULL DEFAULT '',
+        produce_date TEXT NOT NULL DEFAULT '',
+        hostname TEXT NOT NULL DEFAULT '',
+        os TEXT NOT NULL DEFAULT '',
+        cpu TEXT NOT NULL DEFAULT '',
+        disk TEXT NOT NULL DEFAULT '',
+        ram TEXT NOT NULL DEFAULT '',
+        monitor TEXT NOT NULL DEFAULT '',
+        consumable TEXT NOT NULL DEFAULT '',
+        src_key TEXT NOT NULL DEFAULT '',
+        src_sheet TEXT NOT NULL DEFAULT '',
+        import_at TEXT NOT NULL DEFAULT '',
         created_by INTEGER,
         creator_name TEXT NOT NULL DEFAULT '',
         created_at TEXT,
@@ -82,6 +176,15 @@ function ensure() {
       owner: "TEXT NOT NULL DEFAULT ''", status: "TEXT NOT NULL DEFAULT '在用'",
       purchase_date: "TEXT NOT NULL DEFAULT ''", warranty_end: "TEXT NOT NULL DEFAULT ''",
       vendor: "TEXT NOT NULL DEFAULT ''", note: "TEXT NOT NULL DEFAULT ''",
+      campus: "TEXT NOT NULL DEFAULT ''", area: "TEXT NOT NULL DEFAULT ''",
+      floor: "TEXT NOT NULL DEFAULT ''", stat_category: "TEXT NOT NULL DEFAULT ''",
+      nature: "TEXT NOT NULL DEFAULT ''", ip_extra: "TEXT NOT NULL DEFAULT ''",
+      produce_date: "TEXT NOT NULL DEFAULT ''", hostname: "TEXT NOT NULL DEFAULT ''",
+      os: "TEXT NOT NULL DEFAULT ''", cpu: "TEXT NOT NULL DEFAULT ''",
+      disk: "TEXT NOT NULL DEFAULT ''", ram: "TEXT NOT NULL DEFAULT ''",
+      monitor: "TEXT NOT NULL DEFAULT ''", consumable: "TEXT NOT NULL DEFAULT ''",
+      src_key: "TEXT NOT NULL DEFAULT ''", src_sheet: "TEXT NOT NULL DEFAULT ''",
+      import_at: "TEXT NOT NULL DEFAULT ''",
       created_by: 'INTEGER', creator_name: "TEXT NOT NULL DEFAULT ''",
       created_at: 'TEXT', updated_at: 'TEXT',
     };
@@ -92,6 +195,20 @@ function ensure() {
       added.push(col);
     });
     if (added.length) console.log('[terminals] terminals 已补列：' + added.join('、'));
+
+    // ★ 新列的索引必须放在补列**之后**建。
+    //   放进上面那段 exec 的话，老库（表已存在但没有这些列）会在这里直接抛
+    //   「no such column: src_key」，被外层 catch 吃成「台账未就绪」——整个模块下线，
+    //   而且新建库一切正常，只有升级的机器才会炸（2026-10-30 实测踩到）。
+    try {
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_terminals_srckey ON terminals(src_key);
+        CREATE INDEX IF NOT EXISTS idx_terminals_area ON terminals(campus, area, floor);
+      `);
+    } catch (e) {
+      console.warn('[terminals] 建索引失败（不影响使用）：' + ((e && e.message) || e));
+    }
+
     ready = true;
     return true;
   } catch (e) {
@@ -154,36 +271,26 @@ function warrantyOf(end) {
 /** 出库统一整形：补派生字段（保修状态、工单计数） */
 function shape(row) {
   if (!row) return null;
-  const w = warrantyOf(row.warranty_end || '');
-  return {
-    id: row.id,
-    asset_no: row.asset_no || '',
-    name: row.name || '',
-    kind: row.kind || 'PC',
-    brand: row.brand || '',
-    model: row.model || '',
-    sn: row.sn || '',
-    mac: row.mac || '',
-    ip: row.ip || '',
-    department: row.department || '',
-    location: row.location || '',
-    owner: row.owner || '',
-    status: row.status || '在用',
-    purchase_date: row.purchase_date || '',
-    warranty_end: row.warranty_end || '',
-    vendor: row.vendor || '',
-    note: row.note || '',
-    created_by: row.created_by || null,
-    creator_name: row.creator_name || '',
-    created_at: row.created_at || '',
-    updated_at: row.updated_at || '',
-    warranty_state: w.state,
-    warranty_days: w.days,
-    warranty_text: w.text,
-    issue_count: row.issue_count === undefined ? undefined : Number(row.issue_count || 0),
-    open_issue_count: row.open_issue_count === undefined ? undefined : Number(row.open_issue_count || 0),
-    last_issue_at: row.last_issue_at === undefined ? undefined : (row.last_issue_at || ''),
-  };
+  // 按 FIELDS 逐列搬，而不是手写 30 个字段 —— 手写的话每加一列就漏一次，
+  // 而漏掉的表现是「导入成功但详情里看不到」，极难查
+  const out = { id: row.id };
+  FIELDS.forEach((k) => { out[k] = row[k] == null ? '' : row[k]; });
+  if (!out.kind) out.kind = 'PC';
+  if (!out.status) out.status = '在用';
+  const w = warrantyOf(out.warranty_end || '');
+  out.created_by = row.created_by || null;
+  out.creator_name = row.creator_name || '';
+  out.created_at = row.created_at || '';
+  out.updated_at = row.updated_at || '';
+  out.src_sheet = row.src_sheet || '';
+  out.import_at = row.import_at || '';
+  out.warranty_state = w.state;
+  out.warranty_days = w.days;
+  out.warranty_text = w.text;
+  out.issue_count = row.issue_count === undefined ? undefined : Number(row.issue_count || 0);
+  out.open_issue_count = row.open_issue_count === undefined ? undefined : Number(row.open_issue_count || 0);
+  out.last_issue_at = row.last_issue_at === undefined ? undefined : (row.last_issue_at || '');
+  return out;
 }
 
 /** 列表基础 SELECT：带工单计数的相关子查询。
@@ -226,9 +333,10 @@ function list(opts) {
   if (kw) {
     const lk = '%' + kw + '%';
     where.push('(t.asset_no LIKE ? OR t.name LIKE ? OR t.sn LIKE ? OR t.mac LIKE ?'
-      + ' OR t.ip LIKE ? OR t.department LIKE ? OR t.location LIKE ? OR t.owner LIKE ?'
-      + ' OR t.brand LIKE ? OR t.model LIKE ?)');
-    params.push(lk, lk, lk, lk, lk, lk, lk, lk, lk, lk);
+      + ' OR t.ip LIKE ? OR t.ip_extra LIKE ? OR t.department LIKE ? OR t.location LIKE ? OR t.owner LIKE ?'
+      + ' OR t.brand LIKE ? OR t.model LIKE ? OR t.campus LIKE ? OR t.area LIKE ? OR t.floor LIKE ?'
+      + ' OR t.hostname LIKE ? OR t.stat_category LIKE ? OR t.os LIKE ?)');
+    params.push(lk, lk, lk, lk, lk, lk, lk, lk, lk, lk, lk, lk, lk, lk, lk, lk, lk);
   }
   if (dept) { where.push('t.department = ?'); params.push(dept); }
   if (kind) { where.push('t.kind = ?'); params.push(kind); }
@@ -340,40 +448,56 @@ function options(opts) {
   return { list: rows, total: rows.length };
 }
 
-/** 下拉用的元数据（类型/状态/科室清单） */
+/** 下拉用的元数据（类型/状态/科室清单，以及台账里出现过的院区/区域/楼层/统计类别/设备性质） */
 function meta() {
   const depts = [];
+  const campuses = [];
+  const areas = [];
+  const floors = [];
+  const statCategories = [];
+  const natures = [];
+  const distinct = (sql, arr) => {
+    try { issueDb.getDb().prepare(sql).all().forEach((r) => arr.push(r.v)); }
+    catch (e) { /* 读不到就给空清单，前端仍能手填 */ }
+  };
   if (ensure()) {
-    try {
-      const db = issueDb.getDb();
-      db.prepare("SELECT DISTINCT department FROM terminals WHERE department != '' ORDER BY department")
-        .all().forEach((r) => depts.push(r.department));
-    } catch (e) { /* 读不到就给空清单，前端仍能手填 */ }
+    distinct("SELECT DISTINCT department AS v FROM terminals WHERE department != '' ORDER BY v", depts);
+    distinct("SELECT DISTINCT campus AS v FROM terminals WHERE campus != '' ORDER BY v", campuses);
+    distinct("SELECT DISTINCT area AS v FROM terminals WHERE area != '' ORDER BY v", areas);
+    distinct("SELECT DISTINCT floor AS v FROM terminals WHERE floor != '' ORDER BY v", floors);
+    distinct("SELECT DISTINCT stat_category AS v FROM terminals WHERE stat_category != '' ORDER BY v", statCategories);
+    distinct("SELECT DISTINCT nature AS v FROM terminals WHERE nature != '' ORDER BY v", natures);
   }
-  return { kinds: KINDS.slice(), statuses: STATUSES.slice(), departments: depts, warranty_soon_days: WARRANTY_SOON_DAYS };
+  return {
+    kinds: KINDS.slice(), statuses: STATUSES.slice(), departments: depts,
+    campuses, areas, floors, stat_categories: statCategories, natures,
+    warranty_soon_days: WARRANTY_SOON_DAYS,
+  };
 }
 
 /* ==================== 写 ==================== */
 
+/** 各字段落库前的长度上限（Excel 里「显示器尺寸」这类值带单引号和品牌，给宽一点） */
+const LIMITS = {
+  asset_no: 60, name: 80, brand: 60, model: 60, sn: 80, mac: 60,
+  ip: 60, ip_extra: 60, department: 60, location: 80, owner: 40,
+  vendor: 80, note: 500, campus: 40, area: 40, floor: 20,
+  stat_category: 40, nature: 40, hostname: 80, os: 40,
+  cpu: 80, disk: 40, ram: 40, monitor: 40, consumable: 120,
+};
+
 function pickInput(b) {
-  return {
-    asset_no: trim(b.asset_no, 60),
-    name: trim(b.name, 80),
-    kind: KINDS.indexOf(trim(b.kind)) >= 0 ? trim(b.kind) : 'PC',
-    brand: trim(b.brand, 60),
-    model: trim(b.model, 60),
-    sn: trim(b.sn, 80),
-    mac: trim(b.mac, 60),
-    ip: trim(b.ip, 60),
-    department: trim(b.department, 60),
-    location: trim(b.location, 80),
-    owner: trim(b.owner, 40),
-    status: STATUSES.indexOf(trim(b.status)) >= 0 ? trim(b.status) : '在用',
-    purchase_date: normDate(b.purchase_date),
-    warranty_end: normDate(b.warranty_end),
-    vendor: trim(b.vendor, 80),
-    note: trim(b.note, 500),
-  };
+  const src = b || {};
+  const d = {};
+  FIELDS.forEach((k) => {
+    if (k === 'status') d[k] = STATUSES.indexOf(trim(src.status)) >= 0 ? trim(src.status) : '在用';
+    else if (k === 'purchase_date' || k === 'warranty_end' || k === 'produce_date') d[k] = normDate(src[k]);
+    else d[k] = trim(src[k], LIMITS[k] || 80);
+  });
+  // 类型：先认系统类型词，认不出再从「统计类别」推（Excel 导入的行往往只有统计类别）
+  d.kind = KINDS.indexOf(d.kind) >= 0 ? d.kind : kindOfStat(d.stat_category);
+  d.mac = normMac(d.mac);
+  return d;
 }
 
 function create(data, user) {
@@ -382,16 +506,14 @@ function create(data, user) {
   const d = pickInput(data || {});
   if (!d.name) return { ok: false, error: '设备名称不能为空（建议写清位置，如「门诊3号诊室工作站」）' };
   const now = nowLocal();
-  const info = db.prepare(`
-    INSERT INTO terminals(asset_no, name, kind, brand, model, sn, mac, ip, department, location,
-                          owner, status, purchase_date, warranty_end, vendor, note,
-                          created_by, creator_name, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    d.asset_no, d.name, d.kind, d.brand, d.model, d.sn, d.mac, d.ip, d.department, d.location,
-    d.owner, d.status, d.purchase_date, d.warranty_end, d.vendor, d.note,
-    (user && user.id) || null, (user && (user.real_name || user.username)) || '', now, now
-  );
+  const cols = FIELDS.concat(['src_key', 'created_by', 'creator_name', 'created_at', 'updated_at']);
+  const vals = FIELDS.map((k) => d[k]).concat([
+    keyOf(d),
+    (user && user.id) || null, (user && (user.real_name || user.username)) || '', now, now,
+  ]);
+  const info = db.prepare(
+    'INSERT INTO terminals(' + cols.join(', ') + ') VALUES (' + cols.map(() => '?').join(', ') + ')'
+  ).run(...vals);
   return { ok: true, id: Number(info.lastInsertRowid) };
 }
 
@@ -402,34 +524,16 @@ function update(id, data) {
   if (!row) return { ok: false, error: '设备不存在', notFound: true };
   // 未传的字段保持原值（与 bookmarks.update 同一套语义），避免前端只提交部分字段时把别的清空
   const b = data || {};
-  const d = pickInput({
-    asset_no: b.asset_no === undefined ? row.asset_no : b.asset_no,
-    name: b.name === undefined ? row.name : b.name,
-    kind: b.kind === undefined ? row.kind : b.kind,
-    brand: b.brand === undefined ? row.brand : b.brand,
-    model: b.model === undefined ? row.model : b.model,
-    sn: b.sn === undefined ? row.sn : b.sn,
-    mac: b.mac === undefined ? row.mac : b.mac,
-    ip: b.ip === undefined ? row.ip : b.ip,
-    department: b.department === undefined ? row.department : b.department,
-    location: b.location === undefined ? row.location : b.location,
-    owner: b.owner === undefined ? row.owner : b.owner,
-    status: b.status === undefined ? row.status : b.status,
-    purchase_date: b.purchase_date === undefined ? row.purchase_date : b.purchase_date,
-    warranty_end: b.warranty_end === undefined ? row.warranty_end : b.warranty_end,
-    vendor: b.vendor === undefined ? row.vendor : b.vendor,
-    note: b.note === undefined ? row.note : b.note,
-  });
+  const merged = {};
+  FIELDS.forEach((k) => { merged[k] = b[k] === undefined ? row[k] : b[k]; });
+  const d = pickInput(merged);
   if (!d.name) return { ok: false, error: '设备名称不能为空' };
-  db.prepare(`
-    UPDATE terminals SET asset_no = ?, name = ?, kind = ?, brand = ?, model = ?, sn = ?, mac = ?,
-      ip = ?, department = ?, location = ?, owner = ?, status = ?, purchase_date = ?,
-      warranty_end = ?, vendor = ?, note = ?, updated_at = ?
-    WHERE id = ?
-  `).run(
-    d.asset_no, d.name, d.kind, d.brand, d.model, d.sn, d.mac, d.ip, d.department, d.location,
-    d.owner, d.status, d.purchase_date, d.warranty_end, d.vendor, d.note, nowLocal(), Number(id)
-  );
+  // src_key 一并刷新：改了科室/位置/MAC 之后旧键就失效了，
+  // 留着旧键会让下一次导入匹配到「改之前的那台」，把用户手改的内容又写回去
+  db.prepare(
+    'UPDATE terminals SET ' + FIELDS.map((k) => k + ' = ?').join(', ')
+    + ', src_key = ?, updated_at = ? WHERE id = ?'
+  ).run(...FIELDS.map((k) => d[k]), keyOf(d), nowLocal(), Number(id));
   return { ok: true, id: Number(id) };
 }
 
@@ -461,8 +565,219 @@ function brief(id) {
   }
 }
 
+/* ==================== 导入 / 导出 ==================== */
+
+/**
+ * MAC 归一化。原表里有三种写法混着：
+ *   「外网：80-3F-5D-08-F9-55」（带内外网前缀）
+ *   「F8:D0:27:20:56:0C」（冒号分隔）
+ *   纯「04-0E-3C-E2-A6-14」
+ * 不归一化的话，同一台机器换个写法就会被当成新设备重复入库。
+ * 认不出 12 位十六进制的就原样保留大写，不硬编造。
+ */
+function normMac(v) {
+  let s = trim(v);
+  if (!s) return '';
+  s = s.replace(/^(内网|外网|有线|无线)\s*[:：]\s*/, '');
+  s = s.split(/[\s/、,;；]+/)[0] || s;
+  const hex = s.replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
+  if (hex.length === 12) return hex.replace(/(.{2})(?=.)/g, '$1-');
+  return s.toUpperCase();
+}
+
+/** 名称由台账字段推出来：Excel 没有「设备名称」列，但工单/列表里必须有个能认的名字 */
+function deriveName(d) {
+  const dept = d.department, loc = d.location;
+  const extra = d.stat_category || d.model;
+  if (dept && loc) return dept + ' ' + loc;
+  if (dept) return extra ? dept + ' ' + extra : dept;
+  if (loc) return extra ? extra + ' ' + loc : loc;
+  if (extra) return [d.stat_category, d.model].filter(Boolean).join(' ');
+  return '';
+}
+
+/**
+ * 查重键。优先级 MAC → SN → 资产编码 →（都没有时）科室+位置+统计类别+型号。
+ * 原表 373 行里只有 94 行有真实资产编码（182 行写着「-」），
+ * 所以绝不能拿资产编码当主键，但也不能不用它 —— 它毕竟是院里贴标签认的那串。
+ *
+ * ★ 复合键要求这四个字段里**至少有两个非空**。真实台账里有七十多行只写了「体检科」
+ *   这样的占位行，若允许单字段成立，它们会互相认成同一台 —— 第一次新增、后面全变成
+ *   「更新」，把几十条不同的记录压成一条。这类行统一记为「信息不足」交给人看。
+ */
+function keyOf(d) {
+  if (d.mac) return 'M:' + d.mac;
+  if (d.sn) return 'S:' + d.sn.toUpperCase();
+  if (d.asset_no) return 'A:' + d.asset_no.toUpperCase();
+  const parts = [d.department, d.location, d.stat_category, d.model].map((x) => trim(x));
+  if (parts.filter(Boolean).length >= 2) return 'C:' + parts.join('|');
+  return '';
+}
+
+/** 一行 Excel（已按列名映射成内部字段名）→ 可落库的对象 */
+function fromImport(raw) {
+  const src = raw || {};
+  const o = {};
+  FIELDS.forEach((k) => { o[k] = isBlank(src[k]) ? '' : trim(src[k]); });
+  o.mac = normMac(src.mac);
+  return o;
+}
+
+/**
+ * 批量导入。dryRun 时整批做完再 ROLLBACK —— 这样「预览」和「真导入」走的是同一段代码，
+ * 不会出现「预览说新增 300、真导入了 297」这种对不上的情况。
+ *
+ * 合并规则（刻意如此）：
+ *   · 只覆盖非空值。Excel 里大量空白格，若连空值一起写，手工补的信息会被台账洗掉。
+ *   · 一个字段都没变 → 记为「无变化」，不刷新 updated_at，避免整表看起来刚被改过。
+ *   · mode='skip' 时已存在的直接跳过（第一次摸清数据时用，避免误改）。
+ */
+function importRows(rows, opts) {
+  if (!ensure()) return { ok: false, error: '终端台账数据表未就绪：' + initError };
+  const db = issueDb.getDb();
+  const o = opts || {};
+  const dryRun = !!o.dryRun;
+  const mode = o.mode === 'skip' ? 'skip' : 'update';
+  const user = o.user || null;
+  const userName = (user && (user.real_name || user.username)) || '';
+  const now = nowLocal();
+
+  const res = {
+    dryRun, mode, total: rows.length,
+    created: 0, updated: 0, unchanged: 0, skipped: 0,
+    thin: [], failed: [], samples: [], sheets: {},
+  };
+
+  const label = {};
+  EXCEL_COLUMNS.concat(SYSTEM_COLUMNS).forEach((c) => { label[c.key] = c.name; });
+
+  const cols = FIELDS.concat(['src_key', 'src_sheet', 'import_at']);
+  const insertSql = 'INSERT INTO terminals(' + cols.join(', ')
+    + ', created_by, creator_name, created_at, updated_at) VALUES ('
+    + cols.map(() => '?').join(', ') + ', ?, ?, ?, ?)';
+  const selByKey = db.prepare('SELECT * FROM terminals WHERE src_key = ? ORDER BY id LIMIT 1');
+  const selByCol = {
+    mac: db.prepare('SELECT * FROM terminals WHERE mac = ? ORDER BY id LIMIT 1'),
+    sn: db.prepare('SELECT * FROM terminals WHERE sn = ? ORDER BY id LIMIT 1'),
+    asset_no: db.prepare('SELECT * FROM terminals WHERE asset_no = ? ORDER BY id LIMIT 1'),
+  };
+
+  db.exec('BEGIN');
+  try {
+    rows.forEach((raw, i) => {
+      const sheet = trim(raw && raw.__sheet) || '未命名';
+      const rowNo = Number(raw && raw.__row) || (i + 2);
+      const bucket = res.sheets[sheet] || (res.sheets[sheet] = { created: 0, updated: 0, unchanged: 0, skipped: 0, thin: 0, failed: 0 });
+
+      const d = pickInput(fromImport(raw));
+      const key = keyOf(d);
+      if (!key) {
+        // 整行空（Excel 底部一大片带格式的空行）直接忽略，不算任何账
+        if (!FIELDS.some((k) => d[k])) return;
+        // 只写了科室 / 只写了位置 的占位行：不够认，也不该硬塞一条无从辨认的记录
+        res.thin.push({
+          sheet, row: rowNo,
+          hint: [d.department, d.location, d.stat_category, d.model].filter(Boolean).join(' / ') || '（无内容）',
+          reason: '信息不足：至少要有「位置」或「统计类别/型号」其中之一，才能确认是哪台设备',
+        });
+        bucket.thin++;
+        return;
+      }
+
+      let hit = selByKey.get(key);
+      if (!hit && d.mac) hit = selByCol.mac.get(d.mac);
+      if (!hit && d.sn) hit = selByCol.sn.get(d.sn);
+      if (!hit && d.asset_no) hit = selByCol.asset_no.get(d.asset_no);
+      // 兜底：手工录入的设备没有 src_key（它只在导入时写），光靠 src_key 会认不出来，
+      // 于是「导出 → 原样再导入」会整份复制一遍。按业务键再查一次。
+      if (!hit && key.charAt(0) === 'C:') {
+        hit = db.prepare('SELECT * FROM terminals WHERE department = ? AND location = ?'
+          + ' AND stat_category = ? AND model = ? ORDER BY id LIMIT 1')
+          .get(d.department, d.location, d.stat_category, d.model);
+      }
+
+      const showName = d.name || deriveName(d) || '(未命名)';
+
+      if (hit) {
+        if (mode === 'skip') {
+          res.skipped++; bucket.skipped++;
+          res.samples.push({ action: '跳过', name: hit.name || showName, sheet, row: rowNo, changed: [] });
+          return;
+        }
+        const changed = [];
+        FIELDS.forEach((k) => {
+          if (k === 'kind') return;               // 类型由统计类别派生，不单独报「改了类型」
+          const nv = d[k];
+          if (!nv) return;                        // ★ 空值不覆盖已有值
+          const ov = hit[k] == null ? '' : hit[k];
+          if (nv !== ov) changed.push(k);
+        });
+        if (!changed.length) {
+          res.unchanged++; bucket.unchanged++;
+          // 老记录（手工录入）没有 src_key，顺手补上，下次导入就不用再全表比
+          if (hit.src_key !== key) {
+            db.prepare('UPDATE terminals SET src_key = ? WHERE id = ?').run(key, hit.id);
+          }
+          return;
+        }
+        const sets = changed.map((k) => k + ' = ?').concat(['src_key = ?', 'src_sheet = ?', 'import_at = ?', 'updated_at = ?']);
+        const vals = changed.map((k) => d[k]).concat([key, sheet, now, now, hit.id]);
+        db.prepare('UPDATE terminals SET ' + sets.join(', ') + ' WHERE id = ?').run(...vals);
+        res.updated++; bucket.updated++;
+        res.samples.push({
+          action: '更新', name: hit.name || showName, sheet, row: rowNo,
+          changed: changed.map((k) => label[k] || k),
+        });
+        return;
+      }
+
+      // 新增：名称推不出来就没法在列表/工单里被认出来，算失败而不是硬塞一条无名记录
+      if (!d.name) d.name = deriveName(d);
+      if (!d.name) {
+        res.failed.push({ sheet, row: rowNo, reason: '无法生成设备名称（科室、位置、统计类别、型号全为空）' });
+        bucket.failed++;
+        return;
+      }
+      const vals = FIELDS.map((k) => d[k]).concat([key, sheet, now, (user && user.id) || null, userName, now, now]);
+      db.prepare(insertSql).run(...vals);
+      res.created++; bucket.created++;
+      res.samples.push({ action: '新增', name: d.name, sheet, row: rowNo, changed: [] });
+    });
+
+    db.exec(dryRun ? 'ROLLBACK' : 'COMMIT');
+  } catch (e) {
+    try { db.exec('ROLLBACK'); } catch (e2) { /* 已经回滚过 */ }
+    return { ok: false, error: '导入失败，已全部回滚：' + ((e && e.message) || e) };
+  }
+
+  res.ok = true;
+  res.sampleTotal = res.samples.length;
+  res.samples = res.samples.slice(0, 40);
+  res.thinTotal = res.thin.length;
+  res.thin = res.thin.slice(0, 60);
+  res.failedTotal = res.failed.length;
+  res.failed = res.failed.slice(0, 60);
+  return res;
+}
+
+/** 导出用：按当前列表的同一套筛选取全量（内部按 500 一页翻，避免再写一遍筛选逻辑） */
+function exportList(o) {
+  const src = o || {};
+  const out = [];
+  let page = 1;
+  for (;;) {
+    const r = list(Object.assign({}, src, { page, pageSize: 500 }));
+    out.push(...r.list);
+    if (!r.list.length || out.length >= r.total) break;
+    page++;
+    if (page > 40) break;   // 兜底：两万条以上就别再翻了，避免死循环
+  }
+  return out;
+}
+
 module.exports = {
-  KINDS, STATUSES, WARRANTY_SOON_DAYS,
-  ensure, list, get, issuesOf, options, meta,
+  KINDS, STATUSES, WARRANTY_SOON_DAYS, EXCEL_COLUMNS, SYSTEM_COLUMNS, FIELDS,
+  ensure, list, get, issuesOf, options, meta, exportList,
   create, update, remove, brief, shape, warrantyOf, daysBetween,
+  importRows, keyOf, normMac, deriveName, kindOfStat,
 };
