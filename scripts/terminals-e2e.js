@@ -487,6 +487,27 @@ const LEGACY_HEADS = ['设备名称', '类型', '责任人', '状态', '保修�
   eq('★ 导出文件原样再导入：0 新增', roundTrip.json.data.created, 0);
   eq('★ 导出文件原样再导入：全部无变化', roundTrip.json.data.updated, 0);
 
+  // ---- 表头异写：院里台账写成「外网地址（IP）」「内网地址(管理口)」----
+  // 上一版 normalize 之后不等于任何已知列名，整列被静默丢掉，
+  // 表现就是「我 Excel 里明明填了外网地址，系统里没有」。
+  const wbAlias = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wbAlias, XLSX.utils.aoa_to_sheet([
+    ['资产编码', '科室', '设备类型', '内网地址(管理口)', '外网地址（IP）', '外网使用人'],
+    ['ALIAS-001', '信息科', '台式计算机', '200.100.60.51', '10.10.10.51', '张三'],
+  ]), '计算机');
+  const aliasBuf = XLSX.write(wbAlias, { type: 'buffer', bookType: 'xlsx' });
+  const aliasDry = await upload('admin', '/api/terminals/import?dryRun=1', aliasBuf, 'alias.xlsx');
+  eq('带括号后缀的表头也能认出设备（读到 1 条）', aliasDry.json.data.total, 1);
+  eq('★ 认不出的列被点名（外网使用人），不让用户猜',
+    (aliasDry.json.data.ignored_headers || []).map((x) => x.header).join(','), '外网使用人');
+  eq('★ 同一行里「备注/说明」这类无关列不占提示名额',
+    (aliasDry.json.data.ignored_headers || []).length, 1);
+  const aliasImp = await upload('admin', '/api/terminals/import', aliasBuf, 'alias.xlsx');
+  eq('异写表头导入 → 200', aliasImp.status, 200);
+  const aliasRow = (await call('admin', 'GET', '/api/terminals?keyword=ALIAS-001')).json.data.list[0];
+  eq('★ 「外网地址（IP）」写进了外网地址', aliasRow.ip_extra, '10.10.10.51');
+  eq('★ 「内网地址(管理口)」写进了内网地址', aliasRow.ip, '200.100.60.51');
+
   const viewerImp = await upload('viewer', '/api/terminals/import', buildBook());
   eq('★ 只读角色导入 → 403', viewerImp.status, 403);
 

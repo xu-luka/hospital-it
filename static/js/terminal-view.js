@@ -149,8 +149,10 @@
                   </span>
                 </td>
                 <td>
-                  <span class="mono">{{ r.ip || '—' }}</span>
-                  <span class="cell-sub mono" v-if="r.mac" :title="r.mac">{{ r.mac }}</span>
+                  <!-- 内网地址优先；只填了外网地址（打印机、自助机常见）就把它顶上来 ——
+                       否则这一列只剩一个「—」，用户会得出「我明明填了地址，导入却没写进来」的结论 -->
+                  <span class="mono" :class="{ 'is-wan': !r.ip && r.ip_extra }" :title="ipTitle(r)">{{ ipMain(r) }}</span>
+                  <span class="cell-sub mono" v-if="ipSub(r)" :class="{ 'is-wan': r.ip && r.ip_extra }" :title="ipTitle(r)">{{ ipSub(r) }}</span>
                 </td>
                 <td>
                   <span class="cell-strong spec-text" :title="specTitle(r)">{{ specMain(r) }}</span>
@@ -360,6 +362,14 @@
               会并成一条；空白单元格不会覆盖系统里已有的内容。
             </div>
 
+            <!-- 认不出的列必须当场说：不然用户以为「外网地址我填了」，其实整列都没进来 -->
+            <div class="imp-note imp-bad" v-if="imp.ignored && imp.ignored.length" style="margin-top:10px">
+              这几列没认出来，里面的内容不会导入：<b>{{ imp.ignored.map(function(i){ return i.header; }).join('、') }}</b>
+              <template v-if="imp.preview.ignoredTotal > imp.ignored.length">…等 {{ imp.preview.ignoredTotal }} 列</template>。
+              台账只认 21 列（不确定列名就先点「导出」拿一份标准表头的表对照）；
+              「外网地址（IP）」「内网地址(管理口)」这类带括号后缀的写法能认，改名成别的就认不出了。
+            </div>
+
             <div class="section-block" v-if="imp.preview.samples && imp.preview.samples.length">
               <div class="sec-title">前 20 条会怎么处理</div>
               <div class="table-wrap">
@@ -536,6 +546,32 @@
         return all.filter(Boolean).join(' · ');
       },
 
+      /**
+       * 列表第 4 列拆两行：主行内网地址，副行外网地址（没有外网就给 MAC）。
+       * 只有外网地址没有内网地址时，把外网顶到主行并标注「外网」——
+       * 这一列原本只看 ip，只填了外网的设备会显示成「—」，看起来就像「导入没写进来」。
+       */
+      ipMain(r) {
+        if (!r) return '—';
+        if (r.ip) return r.ip;
+        if (r.ip_extra) return '外网 ' + r.ip_extra;
+        return '—';
+      },
+      ipSub(r) {
+        if (!r) return '';
+        if (r.ip && r.ip_extra) return '外网 ' + r.ip_extra;
+        return r.mac || '';
+      },
+      /** 悬停看全：内外网 + MAC 三样都摆出来，省得为了核对一个 MAC 去开详情 */
+      ipTitle(r) {
+        if (!r) return '';
+        const parts = [];
+        if (r.ip) parts.push('内网 ' + r.ip);
+        if (r.ip_extra) parts.push('外网 ' + r.ip_extra);
+        if (r.mac) parts.push('MAC ' + r.mac);
+        return parts.length ? parts.join(' ｜ ') : '未登记地址';
+      },
+
       /** 详情按组显示，全空的一组直接不显示（手工录的空设备不会变成一整屏「—」） */
       detailGroups(t) {
         if (!t) return [];
@@ -591,7 +627,7 @@
         e.target.value = '';
         if (!f) return;
         if (!/\.(xlsx|xls)$/i.test(f.name)) return this.$toast('请选择 Excel 文件（.xlsx）', 'err');
-        this.imp = { filename: f.name, file: f, mode: 'update', preview: null, sheets_scanned: [] };
+        this.imp = { filename: f.name, file: f, mode: 'update', preview: null, sheets_scanned: [], ignored: [] };
         this.previewImp();
       },
 
@@ -605,6 +641,7 @@
           const d = await this.$api.upload('/terminals/import?dryRun=1&mode=' + imp.mode, fd);
           imp.preview = d;
           imp.sheets_scanned = d.sheets_scanned || [];
+          imp.ignored = d.ignored_headers || [];
         } catch (e) {
           this.imp = null;
           this.$toast(e.message, 'err');

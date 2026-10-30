@@ -3397,6 +3397,10 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-base); }
    再往里塞第五个就会被裁掉半个 —— 功能不可见等于没有，宁可另开一个入口。 */
 .term-table .c-ops { width: 232px; }
 
+/* 只登记了外网地址、没有内网地址的行：地址用提示色 + 「外网」前缀，
+   别让它看起来跟内网地址一样（IP 管理和网段统计只认内网地址，混着看会算错账） */
+.term-table .mono.is-wan { color: var(--warn); }
+
 /* 「配置 / 耗材」列：主行放操作系统（或耗材型号），副行放 CPU/内存。
    合成一行「Windows 10 专业版 · i5-9500」需要 197px，而这列只有 168px，
    挤一行的结果是 CPU 永远显示成省略号 —— 而 CPU 才是比对机器好坏时真正看的那个。 */
@@ -3478,4 +3482,10 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-base); }
   color: var(--muted);
 }
 .imp-tbl { min-width: 620px; }
+/* 「这些列没认出来」—— 红系，因为它意味着字段会被静默丢掉（用户会以为「我明明填了」） */
+.imp-note.imp-bad {
+  border-left-color: var(--bad);
+  background: var(--bad-soft);
+  color: var(--bad);
+}
 .imp-tbl td, .imp-tbl th { white-space: nowrap; }

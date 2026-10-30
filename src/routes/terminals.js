@@ -145,6 +145,33 @@ const HEADER_MAP = (() => {
   return m;
 })();
 
+/**
+ * 表头 → 内部字段（带模糊兜底）。
+ *
+ * 为什么需要兜底：院里那份台账被改过好几版，表头常写成「外网地址（IP）」「外网地址(内网/外网)」
+ * 「内网地址(管理口)」这类带括号后缀的样子。归一化之后它不等于任何已知列名，
+ * 于是整列被静默丢掉 —— 用户看到的就是「我明明在 Excel 里填了外网地址，系统里没有」。
+ * 上一版就是这样：外网地址一列写了值，导入却只进了内网地址。
+ *
+ * 兜底规则只做两件事，且要求表头里出现「地址」或「IP」：
+ *   含「外网 / 互联网」→ ip_extra；含「内网 / 局域网」→ ip。
+ * MAC 列一律不参与（「外网MAC」这种写法要留在 mac 上）。
+ */
+function matchHeader(h) {
+  if (!h) return '';
+  const direct = HEADER_MAP[h];
+  if (direct) return direct;
+  if (h.indexOf('mac') >= 0 || h.indexOf('物理地址') >= 0) return '';
+  const looksAddr = h.indexOf('地址') >= 0 || h.indexOf('ip') >= 0;
+  if (!looksAddr) return '';
+  if (h.indexOf('外网') >= 0 || h.indexOf('互联网') >= 0) return 'ip_extra';
+  if (h.indexOf('内网') >= 0 || h.indexOf('局域网') >= 0) return 'ip';
+  return '';
+}
+
+/** 这些表头本来就不进台账，出现在「没认出来的列」清单里只会误导人 */
+const IGNORABLE_HEADERS = ['序号', '备注', '编号', '说明', '填写说明', ''];
+
 /** 这些列出现任意一个，才认为这张表是设备台账（用来跳过「填写说明」之类的表）。
  *  刻意不含「院区」—— 一张只有院区的表没有任何可用信息，认了也没法建记录。 */
 const IDENTIFY_COLS = ['统计类别', '设备性质', '资产编码', '科室', 'mac', 'sn码', '内网地址'];
@@ -297,6 +324,8 @@ router.post('/import', upload.single('file'), (req, res) => {
 
   const records = [];
   const scanned = [];
+  const ignored = [];          // 表头认不出来的列：名字都给它列出来，别让用户猜「为什么这列没进去」
+  const ignoredSeen = {};
   try {
     wb.SheetNames.forEach((name) => {
       const ws = wb.Sheets[name];
@@ -304,13 +333,23 @@ router.post('/import', upload.single('file'), (req, res) => {
       const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
       if (!aoa.length) return;
 
-      const rawHeader = (aoa[0] || []).map((h) => normHeader(h));
-      const mapped = rawHeader.map((h) => HEADER_MAP[h] || '');
-      const hit = rawHeader.filter((h) => IDENTIFY_COLS.some((c) => normHeader(c) === h)).length;
+      const rawHeader = (aoa[0] || []).map((h) => String(h == null ? '' : h).trim());
+      const norm = rawHeader.map(normHeader);
+      const mapped = norm.map((h) => matchHeader(h));
+      const hit = norm.filter((h) => IDENTIFY_COLS.some((c) => normHeader(c) === h)).length;
       if (!hit) {
         scanned.push({ sheet: name, skipped: true, reason: '表头里没有任何台账字段，已跳过' });
         return;
       }
+
+      rawHeader.forEach((h, ci) => {
+        if (!h || mapped[ci]) return;
+        if (IGNORABLE_HEADERS.indexOf(norm[ci]) >= 0) return;
+        const k = name + '\u0000' + h;
+        if (ignoredSeen[k]) return;
+        ignoredSeen[k] = 1;
+        ignored.push({ sheet: name, header: h });
+      });
 
       let used = 0;
       for (let i = 1; i < aoa.length; i++) {
@@ -354,7 +393,15 @@ router.post('/import', upload.single('file'), (req, res) => {
         + ' / 跳过 ' + r.skipped + ' / 信息不足 ' + r.thinTotal + ' / 失败 ' + r.failedTotal
         + '（文件：' + req.file.originalname + '）');
     }
-    res.json({ code: 0, data: Object.assign({}, r, { sheets_scanned: scanned, filename: req.file.originalname }) });
+    res.json({
+      code: 0,
+      data: Object.assign({}, r, {
+        sheets_scanned: scanned,
+        ignored_headers: ignored.slice(0, 20),
+        ignoredTotal: ignored.length,
+        filename: req.file.originalname,
+      }),
+    });
   } catch (e) {
     res.status(500).json({ code: 500, message: '导入失败：' + ((e && e.message) || e) });
   }
