@@ -53,6 +53,7 @@ function createTables() {
     content TEXT NOT NULL DEFAULT '',
     department TEXT NOT NULL DEFAULT '',
     reporter TEXT NOT NULL DEFAULT '',
+    device_id INTEGER,
     status TEXT NOT NULL DEFAULT 'pending',
     assignee_id INTEGER,
     assignee_name TEXT NOT NULL DEFAULT '',
@@ -126,6 +127,10 @@ function migrate() {
   if (!issueCols.includes('created_by')) addCol('issues', "created_by TEXT NOT NULL DEFAULT ''");
   if (!issueCols.includes('category')) addCol('issues', 'category TEXT'); // 一级分类，NULL=待回填
   if (!issueCols.includes('report_time')) addCol('issues', "report_time TEXT NOT NULL DEFAULT ''");
+  // 关联终端台账（src/terminals.js 的 terminals 表，同库 his.db）。
+  // 刻意做成可空、且不加外键约束：删终端时不该连带删掉历史工单，
+  // 「这台机器以前报修过什么」是排查依据，工单必须活得比设备久。
+  if (!issueCols.includes('device_id')) addCol('issues', 'device_id INTEGER');
   if (!fileCols.includes('mime')) addCol('files', "mime TEXT NOT NULL DEFAULT ''");
 }
 

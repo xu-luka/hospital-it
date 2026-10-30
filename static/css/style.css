@@ -3309,3 +3309,66 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-base); }
   margin: 6px 0 14px;
   line-height: 1.6;
 }
+
+/* ============================================================================
+   十一、终端资产台账（2026-10-30）
+   ----------------------------------------------------------------------------
+   统计条复用第十节的 .stat-strip / .stat-cell，这里只加台账特有的三样东西：
+   设备名（可点开详情）、报修次数（可点）、详情弹窗里的字段网格。
+   都不依赖 :has / color-mix —— 内网老机器（Chrome 100 档）会把整条规则丢掉而不是降级。
+   ============================================================================ */
+/* 设备名：整行靠它打开详情，所以给个明确的"可以点"的暗示 */
+.term-name {
+  cursor: pointer;
+  border-bottom: 1px dashed transparent;
+  transition: border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.term-name:hover {
+  color: var(--accent);
+  border-bottom-color: var(--accent-line);
+}
+
+/* 报修次数：数字本身可点（"这台修了 11 次"是换新的依据，得让人一眼点得进去） */
+.term-issues {
+  font-family: var(--font-mono);
+  color: var(--info);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.term-issues:hover { text-decoration: underline; }
+
+/* 详情弹窗的字段网格：三列，窄屏自动降到两列 */
+.term-info {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px 18px;
+  margin-bottom: 4px;
+}
+.term-info .ti { min-width: 0; }
+.term-info .ti .k {
+  font-size: var(--fs-xs);
+  color: var(--quiet);
+  letter-spacing: .04em;
+  margin-bottom: 2px;
+}
+.term-info .ti .v {
+  font-size: var(--fs-sm);
+  color: var(--text);
+  word-break: break-all;   /* MAC / SN 这种长串在窄列里必须能断，否则整格撑破 */
+}
+
+/* 可点的表格行（详情弹窗里的历史工单） */
+.row-link { cursor: pointer; }
+.row-link:hover td { background: var(--surface-2); }
+
+/* 表格列宽：九列在 1440 屏上会被压扁（「张医生」折成「张医/生」这种）。
+   按项目既有约定处理 —— 给表格设 min-width，超出的交给 .table-wrap 的横向滚动，
+   而不是让浏览器按比例压缩列宽。 */
+.term-table { min-width: 1000px; }
+.term-table td { white-space: nowrap; }
+.term-table .cell-strong,
+.term-table .cell-sub { display: block; overflow: hidden; text-overflow: ellipsis; }
+.term-table .c-dev { width: 236px; }
+.term-table .c-dept { width: 154px; }
+.term-table .c-warranty { width: 120px; }
+.term-table .c-ops { width: 168px; }

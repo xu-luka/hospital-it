@@ -67,6 +67,15 @@ app.use('/api/dashboard/contracts', require('./src/routes/dashboard-contracts'))
 // 问题记录业务
 app.use('/api/issues', require('./src/routes/issues'));
 app.use('/api/dashboard/issues', require('./src/routes/dashboard-issues'));
+
+// 终端资产台账（PC / 打印机 / 自助机 …）。
+// 单独包一层 try/catch：这批文件与工单表同库，若某个版本的 src/db.js 没同步替换，
+// 这里 require 或建表可能抛错 —— 台账挂了不能让工单、合同一起起不来。
+try {
+  app.use('/api/terminals', require('./src/routes/terminals'));
+} catch (e) {
+  console.warn('>>> 终端台账模块装载失败（忽略，其余功能正常）：' + ((e && e.message) || e));
+}
 // 问题记录 Excel 导入导出
 app.use('/api/excel-issues', require('./src/routes/excel-issues'));
 // 机房设备巡检（大屏 / 报告 / 触发 / 重载）

@@ -31,6 +31,7 @@
       'docs.view', 'docs.manage',
       'bookmarks.view', 'bookmarks.manage', 'bookmarks.secret',
       'ipam.view', 'ipam.manage',
+      'terminals.view', 'terminals.manage',
       'screen.view', 'devices.view',
       'inspection.view', 'inspection.manage',
       'netflow.view', 'netflow.manage',

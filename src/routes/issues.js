@@ -12,6 +12,8 @@ const { authRequired, requirePerm, guardModule } = require('../auth');
 const { toSafeNum, toSafeText, logAction, genIssueNo } = require('../utils');
 // 超期（SLA）判定：规则与时间解析都在纯函数模块里，便于离线自测
 const sla = require('../issue-sla');
+// 终端资产台账：工单可挂到具体设备上（issues.device_id，与 terminals 同库 his.db）
+const terminals = require('../terminals');
 
 const router = express.Router();
 router.use(authRequired);
@@ -31,6 +33,14 @@ router.use((req, res, next) => {
   const isCreateWrite = isWrite && CREATE_WRITE_PATHS.some((re) => re.test(req.path));
   if (isCreateWrite) return requirePerm('issues.create')(req, res, next);
   return guardModule('issues')(req, res, next);
+});
+
+// 工单列表与详情会对 terminals 表做 LEFT JOIN，必须先确保它存在。
+// ensure() 幂等且成功后只留一个布尔判断，失败也只是这次 JOIN 报错被接口自己的 catch 接住，
+// 不影响工单本身 —— 台账没建好时工单照样能开、能查（只是看不到设备那一列）。
+router.use((req, res, next) => {
+  try { terminals.ensure(); } catch (e) { /* 忽略：由各接口自行降级 */ }
+  next();
 });
 
 // ---- 附件存储：随机文件名，原名进库 ----
@@ -102,6 +112,17 @@ function publicIssue(r) {
   const o = Object.assign({}, r, { status_text: config.STATUS[r.status] || r.status });
   if (o.category == null) o.category = '日常软件'; // 老数据兼容，正常已在启动时回填
   if (o.module == null) o.module = '';
+  // 关联终端设备：列表 SQL 会带 t.name / t.asset_no / t.location 三个别名，
+  // 详情接口不带（走 terminals.brief 补完整对象），所以这里要能容忍别名缺失。
+  o.device = o.device_id ? {
+    id: o.device_id,
+    name: o.device_name || '',
+    asset_no: o.device_asset_no || '',
+    location: o.device_location || '',
+  } : null;
+  delete o.device_name;
+  delete o.device_asset_no;
+  delete o.device_location;
   return o;
 }
 
@@ -152,8 +173,9 @@ router.get('/', (req, res) => {
   const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : '';
   const total = db.prepare(`SELECT COUNT(*) AS c FROM issues i ${whereSql}`).get(...params).c;
   const rows = db.prepare(`
-    SELECT i.*
+    SELECT i.*, t.name AS device_name, t.asset_no AS device_asset_no, t.location AS device_location
     FROM issues i
+    LEFT JOIN terminals t ON t.id = i.device_id
     ${whereSql}
     ORDER BY i.report_time DESC, i.id DESC
     LIMIT ? OFFSET ?
@@ -270,10 +292,19 @@ router.post('/', (req, res) => {
   }
   const no = genIssueNo(db, reportTime);
   const now = db.prepare("SELECT datetime('now','localtime') AS t").get().t;
+
+  // 关联终端设备：deviceId 由前端设备下拉给出；设备不存在就当没选（不报错，别把报修挡住）
+  const deviceId = toSafeNum(b.deviceId || b.device_id, 0) || null;
+  const dev = deviceId ? terminals.brief(deviceId) : null;
+  // 选了设备就自动带科室 —— 报障人经常只在「科室」和「设备」里填一个，
+  // 两个都空着的话，月度按科室统计会凭空多出一堆「未分类」
+  let department = toSafeText(b.department);
+  if (!department && dev && dev.department) department = dev.department;
+
   const info = db.prepare(`
-    INSERT INTO issues(no, title, category, module, urgency, content, department, reporter, status, created_by, report_time, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
-  `).run(no, title, category, module, urgency, content, toSafeText(b.department), toSafeText(b.reporter), req.user.username, reportTime, now, now);
+    INSERT INTO issues(no, title, category, module, urgency, content, department, reporter, device_id, status, created_by, report_time, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
+  `).run(no, title, category, module, urgency, content, department, toSafeText(b.reporter), dev ? dev.id : null, req.user.username, reportTime, now, now);
   registerCustom(db, category, module); // 自定义分类/模块持久化，下次下拉可见
   const id = Number(info.lastInsertRowid);
 
@@ -303,7 +334,10 @@ router.get('/:id', (req, res) => {
       preview_supported,
     };
   });
-  res.json({ code: 0, data: { issue: publicIssue(issue), logs, files } });
+  // 详情页要显示设备名称/资产号/位置/责任人，这里补完整的 brief（列表走 JOIN 别名）
+  const pub = publicIssue(issue);
+  if (issue.device_id) pub.device = terminals.brief(issue.device_id) || pub.device;
+  res.json({ code: 0, data: { issue: pub, logs, files } });
 });
 
 // 更新基本信息（标题/模块/紧急程度/内容/科室/报障人）
@@ -320,8 +354,22 @@ router.put('/:id', (req, res) => {
   const module = b.module !== undefined ? normModule(b.module, category) : (issue.module || '');
   const urgency = b.urgency !== undefined ? (config.URGENCY.includes(toSafeText(b.urgency)) ? toSafeText(b.urgency) : issue.urgency) : issue.urgency;
   const content = b.content !== undefined ? toSafeText(b.content) : issue.content;
-  const department = b.department !== undefined ? toSafeText(b.department) : issue.department;
+  let department = b.department !== undefined ? toSafeText(b.department) : issue.department;
   const reporter = b.reporter !== undefined ? toSafeText(b.reporter) : issue.reporter;
+  // 设备关联语义（与 bookmarks 的密码字段同一套约定，前端据此实现）：
+  //   deviceId 未传(undefined) → 保持原关联不动
+  //   deviceId 传 0 / null / '' → 解除关联（设备报废或选错了）
+  //   传有效 id               → 改为该设备；科室空着时顺手带出设备所属科室
+  let deviceId = issue.device_id || null;
+  if (b.deviceId !== undefined || b.device_id !== undefined) {
+    const raw = b.deviceId !== undefined ? b.deviceId : b.device_id;
+    const n = toSafeNum(raw, 0);
+    deviceId = n > 0 && terminals.brief(n) ? n : null;
+  }
+  if (deviceId && !department) {
+    const dv = terminals.brief(deviceId);
+    if (dv && dv.department) department = dv.department;
+  }
   // 问题记录时间可改，但单号保持不变（单号以首次创建时生成值为准）
   let reportTime = issue.report_time || '';
   if (b.reportTime !== undefined) {
@@ -329,8 +377,8 @@ router.put('/:id', (req, res) => {
     if (/^\d{4}-\d{2}-\d{2}$/.test(r)) reportTime = r;
   }
 
-  db.prepare("UPDATE issues SET title=?, category=?, module=?, urgency=?, content=?, department=?, reporter=?, report_time=?, updated_at=datetime('now','localtime') WHERE id=?")
-    .run(title, category, module, urgency, content, department, reporter, reportTime, id);
+  db.prepare("UPDATE issues SET title=?, category=?, module=?, urgency=?, content=?, department=?, reporter=?, device_id=?, report_time=?, updated_at=datetime('now','localtime') WHERE id=?")
+    .run(title, category, module, urgency, content, department, reporter, deviceId, reportTime, id);
   registerCustom(db, category, module);
   logAction(req.user, '编辑问题', `单号 ${issue.no}` + (title !== issue.title ? '：' + title : ''), req.ip);
   res.json({ code: 0, message: '已保存' });

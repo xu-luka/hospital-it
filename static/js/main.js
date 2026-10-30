@@ -73,10 +73,10 @@
     { title: '技术文档库', items: [
       { path: 'docs', icon: 'book', label: '技术文档', perm: 'docs.view' },
     ] },
-    // 资源管理：内部系统入口（网页书签）与院内 IP 台账
     { title: '资源管理', items: [
       { path: 'bookmarks', icon: 'link', label: '网页书签', perm: 'bookmarks.view' },
       { path: 'ipam', icon: 'ip', label: 'IP 管理', perm: 'ipam.view' },
+      { path: 'terminals', icon: 'server', label: '终端资产', perm: 'terminals.view' },
     ] },
     { title: '机房巡检', items: [
       { path: 'bigscreen', icon: 'monitor', label: '监控大屏', perm: 'screen.view' },
@@ -102,6 +102,7 @@
     doc: 'docs.view',
     bookmarks: 'bookmarks.view',
     ipam: 'ipam.view',
+    terminals: 'terminals.view',
     bigscreen: 'screen.view',
     devices: 'devices.view',
     reports: 'inspection.view',
@@ -122,6 +123,7 @@
     doc: '文档预览',
     bookmarks: '网页书签',
     ipam: 'IP 管理',
+    terminals: '终端资产',
     bigscreen: '监控大屏',
     devices: '设备台账',
     reports: '巡检报告',
@@ -391,6 +393,8 @@
         // （写成 bookmarkview / bookmark_view 都还原不出 BookmarkView，会渲染成空白自定义标签）
         if (p === 'bookmarks') return 'bookmark-view';
         if (p === 'ipam') return 'ipam-view';
+        // 终端资产：TerminalView → terminal-view ✓（camelize 得 terminalView，capitalize 得 TerminalView）
+        if (p === 'terminals') return 'terminal-view';
         return 'dashboard-view';
       },
     },
@@ -708,9 +712,9 @@
   } else {
     console.error('[main.js] 流量监控组件缺失（netflow-view.js 未加载），流量监控页会显示空白');
   }
-  // 资源管理：网页书签 + IP 管理。同样禁止「有就注册、没有静默跳过」——
+  // 资源管理：网页书签 + IP 管理 + 终端资产。同样禁止「有就注册、没有静默跳过」——
   // 少一个文件时页面会整块空白，而 prod 构建不会有任何提示。
-  ['BookmarkView', 'IpamView'].forEach((n) => {
+  ['BookmarkView', 'IpamView', 'TerminalView'].forEach((n) => {
     if (V[n]) {
       app.component(n, V[n]);
     } else {

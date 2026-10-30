@@ -59,6 +59,9 @@ const MODULES = [
   // 否则「按角色授予是否可查看密码」这个需求根本落不了地（勾了管理就等于勾了看密码）。
   { code: 'bookmarks', name: '网页书签', group: '资源管理', acts: ['view', 'manage', 'secret'], actLabels: { secret: '看密码' } },
   { code: 'ipam', name: 'IP 管理', group: '资源管理', acts: ['view', 'manage'] },
+  // 终端资产台账：PC / 打印机 / 自助机这类「连不上也管不了」的设备。
+  // 与下面【机房巡检】的「设备台账」不是一回事 —— 那个是能 WMI/SSH 采集的服务器与网络设备。
+  { code: 'terminals', name: '终端资产', group: '资源管理', acts: ['view', 'manage'] },
   { code: 'screen', name: '监控大屏', group: '机房巡检', acts: ['view'] },
   { code: 'devices', name: '设备台账', group: '机房巡检', acts: ['view', 'manage'] },
   { code: 'inspection', name: '巡检报告', group: '机房巡检', acts: ['view', 'manage'] },
@@ -109,6 +112,9 @@ const OPERATOR_PERMS = [
   // 这一档独立于「管理」，取消它不会连带影响编辑权限。
   'bookmarks.view', 'bookmarks.manage', 'bookmarks.secret',
   'ipam.view', 'ipam.manage',
+  // 终端台账默认给到「管理」：工程师每天都要登记新装机器、改位置、办报废，
+  // 若只给查看，实际上等于没人能录，台账很快就空着不用了。
+  'terminals.view', 'terminals.manage',
   'screen.view',
   // 设备台账刻意只给查看：改造前只有管理员能新增/编辑设备、测试连接，
   // 这里保持原样，需要时管理员在权限页勾上即可（避免"升级完工程师权限变大了"）

@@ -45,7 +45,7 @@
   const V = {};
 
   /* 弹窗表单「有没有改动」的比较字段（各组件自己的表单，字段完全不一样） */
-  const ED_KEYS = ['title', 'category', 'module', 'urgency', 'reportTime', 'department', 'reporter', 'content'];
+  const ED_KEYS = ['title', 'category', 'module', 'urgency', 'reportTime', 'department', 'reporter', 'content', 'deviceId'];
   const UMODAL_KEYS = ['username', 'password', 'real_name', 'role_id', 'phone'];
 
   const fmtDate = (s) => {
@@ -666,6 +666,11 @@
               <div class="info-item"><div class="k">二级模块</div><div class="v">{{ d.issue.module || '（不细分）' }}</div></div>
               <div class="info-item"><div class="k">报障科室</div><div class="v">{{ d.issue.department || '-' }}</div></div>
               <div class="info-item"><div class="k">报障人</div><div class="v">{{ d.issue.reporter || '-' }}</div></div>
+              <div class="info-item"><div class="k">关联设备</div><div class="v">
+                <a v-if="d.issue.device" href="javascript:void(0)" class="link" @click="goDevice"
+                   :title="'在终端台账中查看：' + d.issue.device.name">{{ d.issue.device.name || ('设备 #' + d.issue.device.id) }}</a>
+                <span v-else class="muted">未关联</span>
+              </div></div>
               <div class="info-item"><div class="k">创建人</div><div class="v">{{ d.issue.created_by || '-' }}</div></div>
               <div class="info-item"><div class="k">问题记录时间</div><div class="v">{{ fmt(d.issue.report_time) }}</div></div>
               <div class="info-item"><div class="k">创建时间</div><div class="v">{{ fmt(d.issue.created_at) }}</div></div>
@@ -832,6 +837,19 @@
               <div class="form-item"><label>报障人</label><input v-model="ef.reporter"></div>
               <div class="form-item"><label>报障科室</label><input v-model="ef.department"></div>
             </div>
+            <!-- 关联设备：选了就记在这台机器名下，"这台修过几次"才有据可查。
+                 台账为空或当前角色没有 terminals.view 时整行不出（不拿一个空下拉占版面） -->
+            <div class="form-item" v-if="devices.length">
+              <label>关联设备</label>
+              <select v-model="ef.deviceId">
+                <option :value="0">（不关联设备）</option>
+                <optgroup v-for="g in deviceGroups" :key="g.name" :label="g.name">
+                  <option v-for="dv in g.list" :key="dv.id" :value="dv.id">
+                    {{ dv.name }}{{ dv.location ? ' · ' + dv.location : '' }}{{ dv.asset_no ? ' · ' + dv.asset_no : '' }}
+                  </option>
+                </optgroup>
+              </select>
+            </div>
             <div class="form-item"><label>问题描述</label><textarea v-model="ef.content"></textarea></div>
           </div>
           <div class="modal-foot">
@@ -846,6 +864,8 @@
         STATUS, STATUS_TAG, URGENCY_TAG, URGENCY, mods: moduleStore, ROLE,
         d: null, logContent: '', showAssign: false, assignId: 0,
         engineers: [], showEdit: false, ef: {}, uploading: false,
+        // 终端设备下拉（编辑基本信息时按需加载，不给没权限的人白打一次 403）
+        devices: [],
         // 打开弹窗那一刻的快照，用来判断用户后来有没有改过东西
         efBase: '', assignBase: '',
         previewing: null, previewIndex: 0, previewScale: 1, previewUrl: '',
@@ -860,12 +880,37 @@
       canCreate() { return !!(window.HisPerm && window.HisPerm.can('issues.create')); },
       imageFiles() { return (this.d && this.d.files || []).filter((f) => f.is_image); },
       previewableFiles() { return (this.d && this.d.files || []).filter((f) => f.preview_kind); },
+      /** 设备下拉按科室分组：几百台平铺成一串没法找，optgroup 至少能按科室跳 */
+      deviceGroups() {
+        const map = {};
+        (this.devices || []).forEach((d) => {
+          const k = d.department || '未分科室';
+          if (!map[k]) map[k] = [];
+          map[k].push(d);
+        });
+        return Object.keys(map).sort().map((k) => ({ name: k, list: map[k] }));
+      },
     },
     methods: {
       fmt: (s) => fmtDate(s),
       fmtSize: (s) => fmtSize(s),
       moduleListOf,
       goBack() { location.hash = '#/issues'; },
+      /** 设备清单按需加载一次；台账不可用或没 terminals.view 时静默留空，编辑照旧能用 */
+      async ensureDevices() {
+        if (this.devices.length) return;
+        try {
+          const d = await this.$api.get('/terminals/options');
+          this.devices = (d && d.list) || [];
+        } catch (e) { this.devices = []; }
+      },
+      /** 从工单跳到终端台账并筛出这台设备（hash 路由传不了参，用 sessionStorage 带一次关键词） */
+      goDevice() {
+        const dv = this.d && this.d.issue && this.d.issue.device;
+        if (!dv) return;
+        try { sessionStorage.setItem('his_terminal_kw', dv.name || ''); } catch (e) { /* 忽略 */ }
+        location.hash = '#/terminals';
+      },
       async load() {
         try {
           const id = this.$route.id;
@@ -920,9 +965,12 @@
           department: i.department,
           reporter: i.reporter,
           content: i.content,
+          // 0 表示「不关联任何设备」；后端把 0 当解除关联处理（与「不传」区分开）
+          deviceId: i.device_id || 0,
         };
         this.showEdit = true;
         this.efBase = HisUI.snap(this.ef, ED_KEYS);
+        this.ensureDevices();
       },
       /** 关闭编辑问题弹窗：标题、描述这些填一半被清掉最费事，先确认一次 */
       tryCloseEdit() {
@@ -1143,6 +1191,18 @@
             <select v-model="f.urgency"><option v-for="u in URGENCY" :value="u">{{ u }}</option></select>
           </div>
         </div>
+        <div class="form-item" v-if="devices.length">
+          <label>关联设备（可选）</label>
+          <select v-model="deviceId" @change="onDeviceChange">
+            <option :value="0">（不关联设备）</option>
+            <optgroup v-for="g in deviceGroups" :key="g.name" :label="g.name">
+              <option v-for="dv in g.list" :key="dv.id" :value="dv.id">
+                {{ dv.name }}{{ dv.location ? ' · ' + dv.location : '' }}{{ dv.asset_no ? ' · ' + dv.asset_no : '' }}
+              </option>
+            </optgroup>
+          </select>
+          <div class="mini-note" v-if="deviceId">选了设备会自动带出科室；这台机器的历史报修会记在它名下。</div>
+        </div>
         <div class="form-row">
           <div class="form-item"><label>报障科室</label><input v-model="f.department" placeholder="如：门诊部"></div>
           <div class="form-item"><label>报障人</label><input v-model="f.reporter" placeholder="如：张护士"></div>
@@ -1168,11 +1228,49 @@
         mods: moduleStore, URGENCY,
         f: { title: '', category: '日常软件', module: '', urgency: '中', reportTime: todayStr(), department: '', reporter: '', content: '' },
         pendFiles: [], saving: false,
+        // 设备关联：从「终端资产」页点「报修」跳过来时，按 sessionStorage 里的 id 预先选好
+        devices: [], deviceId: 0,
       };
+    },
+    computed: {
+      deviceGroups() {
+        const map = {};
+        (this.devices || []).forEach((d) => {
+          const k = d.department || '未分科室';
+          if (!map[k]) map[k] = [];
+          map[k].push(d);
+        });
+        return Object.keys(map).sort().map((k) => ({ name: k, list: map[k] }));
+      },
+    },
+    mounted() {
+      let pre = 0;
+      try {
+        pre = Number(sessionStorage.getItem('his_issue_device') || 0);
+        // ★ 读一次就删：否则下次从菜单点「新建问题」还会带着上一台设备
+        sessionStorage.removeItem('his_issue_device');
+      } catch (e) { pre = 0; }
+      this.loadDevices(pre);
     },
     methods: {
       fmtSize: (s) => fmtSize(s),
       moduleListOf,
+      /** 设备清单：台账为空或没权限时静默留空，报修流程不受影响 */
+      async loadDevices(preId) {
+        try {
+          const d = await this.$api.get('/terminals/options');
+          this.devices = (d && d.list) || [];
+          if (preId && this.devices.some((x) => x.id === preId)) {
+            this.deviceId = preId;
+            this.onDeviceChange();
+          }
+        } catch (e) { this.devices = []; }
+      },
+      onDeviceChange() {
+        const d = this.devices.filter((x) => x.id === Number(this.deviceId))[0];
+        // 只补空的科室，不覆盖用户已经填的（他可能就是要按报障科室记，而不是设备归属科室）
+        if (d && !this.f.department && d.department) this.f.department = d.department;
+      },
       onCatChange() {
         if (this.f.category === '__add__') {
           const name = prompt('请输入新分类名称（不超过10字）：');
@@ -1209,7 +1307,8 @@
         if (!this.f.content.trim()) return this.$toast('请填写问题描述', 'err');
         this.saving = true;
         try {
-          const r = await this.$api.post('/issues', this.f);
+          // deviceId 单独合并进去：this.f 是表单字段的白名单对象，别把设备 id 混进表单
+          const r = await this.$api.post('/issues', Object.assign({}, this.f, { deviceId: this.deviceId }));
           if (this.pendFiles.length) {
             const fd = new FormData();
             this.pendFiles.forEach((x) => fd.append('files', x));
