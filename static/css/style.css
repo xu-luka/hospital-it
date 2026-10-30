@@ -1754,14 +1754,16 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-base); }
 .remind-party { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* 工单列表 */
-.iss-table { table-layout: fixed; min-width: 1240px; }
+.iss-table { table-layout: fixed; min-width: 1278px; }
 .iss-table .c-chk   { width: 38px; }
 .iss-table .c-no    { width: 140px; }
 .iss-table .c-cat   { width: 96px; }
 .iss-table .c-mod   { width: 100px; }
 .iss-table .c-urg   { width: 84px; }
 .iss-table .c-st    { width: 84px; }
-.iss-table .c-sla   { width: 106px; }
+/* 144px 是按最长文案算的：「超时完成 720 小时」= 4 个汉字 + 空格 + 3 位数字 + 内边距。
+   窄了会被硬裁成「超时完成 18 小」，而 .tag 是 inline-flex，套 text-overflow 也出不来省略号 */
+.iss-table .c-sla   { width: 144px; }
 .iss-table .c-user  { width: 124px; }
 .iss-table .c-assign{ width: 96px; }
 .iss-table .c-time  { width: 132px; }
@@ -1812,11 +1814,13 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-base); }
 }
 
 /* 巡检报告 */
-.rep-table { table-layout: fixed; min-width: 760px; }
+.rep-table { table-layout: fixed; min-width: 832px; }
 .rep-table .c-type  { width: 110px; }
 .rep-table .c-time  { width: 150px; }
 .rep-table .c-size  { width: 96px; }
-.rep-table .c-ops   { width: 116px; }
+/* 加了「导出PDF」之后是三个按钮：预览 / 导出PDF / 下载。
+   116px 放不下（导出PDF 这个词本身就有 5 个字符宽），第三个会被挤出表格右边看不见 */
+.rep-table .c-ops   { width: 188px; }
 .rep-name {
   font-weight: 600;
   color: var(--text);

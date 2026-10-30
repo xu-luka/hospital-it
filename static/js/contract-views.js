@@ -127,6 +127,17 @@
       // 完成率配色：100% 绿、60% 以上蓝、30% 以上琥珀、其余红。
       // 阈值不是拍脑袋：内网合同常见「按验收节点分批付款」，60% 上下是正常进度，
       // 低于 30% 基本就是该催了。
+      /**
+       * 单行的回款百分比。列表行里没有 pay_percent（那是 /payment-summary 才算的），
+       * 只有 amount / paid_amount，所以这里自己算 —— 口径必须和后端一致：
+       * 金额为 0 但确实付过钱，按已付清（100%）处理，否则会显示成「付了钱却是 0%」。
+       */
+      rowPct(r) {
+        const amount = Number(r.amount) || 0;
+        const paid = Number(r.paid_amount) || 0;
+        if (amount > 0) return Math.round((paid / amount) * 1000) / 10;
+        return paid > 0 ? 100 : 0;
+      },
       rateClass(pct) {
         const n = Number(pct) || 0;
         if (n >= 100) return 'ok';
@@ -260,8 +271,8 @@
               <td>{{ r.party_b || '-' }}</td><td class="num">{{ fmtMoney(r.amount) }}</td>
               <td class="num"><span style="color:var(--ok)">{{ fmtMoney(r.paid_amount) }}</span> / <span style="color:var(--bad)">{{ fmtMoney(r.unpaid_amount) }}</span></td>
               <td class="bar-cell">
-                <div class="bar-track"><i class="bar-fill" :class="rateClass(r.pay_percent)" :style="{width: barWidth(r.pay_percent)}"></i></div>
-                <span class="pct">{{ r.pay_percent || 0 }}%</span>
+                <div class="bar-track"><i class="bar-fill" :class="rateClass(rowPct(r))" :style="{width: barWidth(rowPct(r))}"></i></div>
+                <span class="pct">{{ rowPct(r) }}%</span>
               </td>
               <td class="mono">{{ r.end_date || '-' }}</td>
               <td><span class="tag" :class="statusTag(r.status)">{{ r.status }}</span></td>
