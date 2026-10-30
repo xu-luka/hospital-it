@@ -253,6 +253,21 @@ function ensure() {
     });
     if (added.length) console.log('[terminals] terminals 已补列：' + added.join('、'));
 
+    // 历史脏数据：上一版没把「-」这类占位符归空，于是 MAC 写「-」的几十台机器
+    // 共用查重键 `M:-`，导入时被并成一条。这里清一次，让下一次导入能按真实字段重新认。
+    // 幂等：清完再跑是 0 行。
+    try {
+      const ph = "TRIM({c}) IN ('-','—','－','/','／','无','N/A','n/a')";
+      let n = 0;
+      ['mac', 'sn', 'asset_no', 'hostname'].forEach(function (c) {
+        n += db.prepare('UPDATE terminals SET ' + c + " = '' WHERE " + ph.replace('{c}', c)).run().changes;
+      });
+      const m = db.prepare("UPDATE terminals SET src_key = '' WHERE src_key IN ('M:-','S:-','A:-','H:-','M:—','M:－','M:/')").run().changes;
+      if (n || m) console.log('[terminals] 已清理占位符字段 ' + n + ' 个、失效查重键 ' + m + ' 条');
+    } catch (e) {
+      console.warn('[terminals] 清理占位符失败（不影响使用）：' + ((e && e.message) || e));
+    }
+
     try {
       createIndexes(db);
     } catch (e) {
@@ -511,7 +526,9 @@ function pickInput(b) {
   const d = {};
   FIELDS.forEach((k) => {
     if (k === 'produce_date') d[k] = normDate(src[k]);
-    else d[k] = trim(src[k], LIMITS[k] || 80);
+    // ★ 占位符（「-」「—」「/」）一律归空：台账里用它们表示「这格没填」。
+    //   留在库里会变成 ① 列表里显示一个「-」；② keyOf 把几十台机器认成同一台。
+    else d[k] = isBlank(src[k]) ? '' : trim(src[k], LIMITS[k] || 80);
   });
   d.mac = normMac(d.mac);
   return d;
@@ -639,14 +656,20 @@ function brief(id) {
  *   纯「04-0E-3C-E2-A6-14」
  * 不归一化的话，同一台机器换个写法就会被当成新设备重复入库。
  * 认不出 12 位十六进制的就原样保留大写，不硬编造。
+ *
+ * ★ 占位符必须归空：台账里「MAC」列大量写着「-」（表示这台机器没登记 MAC）。
+ *   以前 `normMac('-')` 原样返回 '-'，于是 `keyOf` 得到 `M:-` —— **所有 MAC 写「-」的行
+ *   共用一个 key，几十台打印机被并成一条**（导入预览里表现为「合并到已有 43、新增 0」，
+ *   用户去列表里搜，怎么都只有一台）。这不是导入 bug，是「空值没归空」。
  */
 function normMac(v) {
+  if (isBlank(v)) return '';
   let s = trim(v);
-  if (!s) return '';
   s = s.replace(/^(内网|外网|有线|无线)\s*[:：]\s*/, '');
   s = s.split(/[\s/、,;；]+/)[0] || s;
   const hex = s.replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
   if (hex.length === 12) return hex.replace(/(.{2})(?=.)/g, '$1-');
+  if (!hex) return '';           // 「内网：-」「无」「N/A」之类：一个十六进制字符都没有 = 没填
   return s.toUpperCase();
 }
 
@@ -663,11 +686,15 @@ function normMac(v) {
  *   「更新」，把几十条不同的记录压成一条。这类行统一记为「信息不足」交给人看。
  */
 function keyOf(d) {
-  if (d.mac) return 'M:' + d.mac;
-  if (d.sn) return 'S:' + d.sn.toUpperCase();
-  if (d.asset_no) return 'A:' + d.asset_no.toUpperCase();
-  if (trim(d.hostname)) return 'H:' + trim(d.hostname).toUpperCase();
-  const parts = [d.department, d.location, d.stat_category, d.model].map((x) => trim(x));
+  // ★ 每个标识都要先判「是不是占位符」：台账里 MAC/SN/资产编码 大量写着「-」，
+  //   直接当键用会让几十台不同的机器共用一个 `M:-`，导入结果变成「合并 43、新增 0」。
+  //   正常路径进来前 pickInput 已经归空，这里再挡一次，避免别处直接调 keyOf 时踩坑。
+  if (d.mac && !isBlank(d.mac)) return 'M:' + normMac(d.mac);
+  if (d.sn && !isBlank(d.sn)) return 'S:' + trim(d.sn).toUpperCase();
+  if (d.asset_no && !isBlank(d.asset_no)) return 'A:' + trim(d.asset_no).toUpperCase();
+  if (trim(d.hostname) && !isBlank(d.hostname)) return 'H:' + trim(d.hostname).toUpperCase();
+  const parts = [d.department, d.location, d.stat_category, d.model]
+    .map((x) => (isBlank(x) ? '' : trim(x)));
   if (parts.filter(Boolean).length >= 2) return 'C:' + parts.join('|');
   return '';
 }
@@ -737,9 +764,12 @@ function importRows(rows, opts) {
         // 只写了科室 / 只写了位置 的占位行：不够认，也不该硬塞一条无从辨认的记录
         res.thin.push({
           sheet, row: rowNo,
-          hint: [d.department, d.location, d.stat_category, d.model].filter(Boolean).join(' / ') || '（无内容）',
+          // 把「院区/区域/楼层」也带进来：真实台账里有整片只填了这三列的空模板行，
+          // 只报「（无内容）」会让人对不上是哪几行 —— 他得看到「珠江街道 / 住院楼 / 三楼」才认得出来。
+          hint: [d.campus, d.area, d.floor, d.department, d.location, d.stat_category, d.model]
+            .filter(Boolean).join(' / ') || '（无内容）',
           reason: '信息不足：至少要有 MAC / SN码 / 资产编码 / 工作组计算机名 之一，'
-            + '或「科室+位置+统计类别+型号」里至少两项',
+            + '或「科室+位置+统计类别+型号」里至少两项（只填了院区/楼层的空模板行会落到这里）',
         });
         bucket.thin++;
         return;

@@ -508,6 +508,27 @@ const LEGACY_HEADS = ['设备名称', '类型', '责任人', '状态', '保修�
   eq('★ 「外网地址（IP）」写进了外网地址', aliasRow.ip_extra, '10.10.10.51');
   eq('★ 「内网地址(管理口)」写进了内网地址', aliasRow.ip, '200.100.60.51');
 
+  // ---- 占位符陷阱：MAC / 资产编码整列写「-」，不能被认成同一台设备 ----
+  // 真实台账（信息设备台账_20260728.xlsx）里 71 行打印机有 43 行 MAC 写「-」；
+  // 以前 normMac('-') 原样返回 '-'，这 43 行共用一个查重键 `M:-`，
+  // 导入结果就是「合并到已有 43、新增 0」—— 用户去列表里搜，只有一台。
+  const wbDash = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wbDash, XLSX.utils.aoa_to_sheet([
+    ['资产编码', '科室', '位置', '统计类别', '内网地址', 'MAC', '型号'],
+    ['-', '信息科', '一楼东', '网络打印机', '200.100.60.61', '-', 'HP M701'],
+    ['-', '信息科', '二楼东', '网络打印机', '200.100.60.62', '-', 'HP M701'],
+    ['-', '信息科', '三楼东', '黑白打印机', '200.100.60.63', '-', 'HP P1108'],
+  ]), '打印机');
+  const dashBuf = XLSX.write(wbDash, { type: 'buffer', bookType: 'xlsx' });
+  const dashDry = await upload('admin', '/api/terminals/import?dryRun=1', dashBuf, 'dash.xlsx');
+  eq('★ MAC 整列写「-」：3 行必须是 3 台，不能并成 1 台', dashDry.json.data.created, 3);
+  eq('★ 占位符不算重复匹配', dashDry.json.data.updated, 0);
+  const dashImp = await upload('admin', '/api/terminals/import', dashBuf, 'dash.xlsx');
+  eq('占位符文件导入 → 新增 3 条', dashImp.json.data.created, 3);
+  const dashRow = (await call('admin', 'GET', '/api/terminals?keyword=200.100.60.61')).json.data.list[0];
+  eq('★ 「-」不会被当成 MAC 存进库', dashRow.mac, '');
+  eq('★ 「-」也不会被当成资产编码', dashRow.asset_no, '');
+
   const viewerImp = await upload('viewer', '/api/terminals/import', buildBook());
   eq('★ 只读角色导入 → 403', viewerImp.status, 403);
 
