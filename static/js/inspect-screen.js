@@ -742,6 +742,8 @@
                 <td class="ops">
                   <div class="row-actions">
                     <button class="btn btn-ghost btn-sm" @click="preview(r)">预览</button>
+                    <button class="btn btn-ghost btn-sm" @click="exportPdf(r)" :disabled="!!printing"
+                            title="打开打印对话框，目标选择「另存为 PDF」">{{ printing === r.name ? '准备中…' : '导出PDF' }}</button>
                     <button class="btn btn-ghost btn-sm" @click="download(r)">下载</button>
                   </div>
                 </td>
@@ -773,6 +775,7 @@
       return {
         rows: [],
         dir: '',
+        printing: '',   // 正在准备导出的报告名（空 = 空闲），用于禁用按钮防重复点击
         pv: { open: false, name: '', url: '' },
         gen: { busy: false, logs: [], taskId: '', elapsed: 0, timer: null, poll: null }
       };
@@ -841,6 +844,73 @@
           setTimeout(() => URL.revokeObjectURL(url), 3000);
         } catch (e) {
           this.$toast && this.$toast(e.message, 'err');
+        }
+      },
+      /**
+       * 导出 PDF：服务端把报告补成「打印友好版」，再借浏览器自带的「打印 → 另存为 PDF」出成品。
+       *
+       * 为什么不在服务端直接生成 PDF：中文字体动辄 10MB 起步，还得做子集化；内网这台机器也不保证
+       * 装了 LibreOffice / wkhtmltopdf。浏览器自带的 PDF 引擎本来就在客户端，打印样式还完全可控。
+       *
+       * 为什么绕一层隐藏 iframe 而不是 window.open：
+       *   · 报告接口要 Bearer，新窗口带不上 token，只会拿到 401；
+       *   · iframe 装 blob 是同源的，可以直接调 contentWindow.print()，也不会把当前页顶掉。
+       *
+       * ★ 隐藏 iframe 必须给真实尺寸（哪怕移出视口），不能用 display:none ——
+       *   不参与布局的文档在 Chrome 里打印出来是空白页。
+       */
+      async exportPdf(item) {
+        if (this.printing) return;
+        this.printing = item.name;
+        let fr = null;
+        let objUrl = '';
+        const cleanup = () => {
+          if (objUrl) { URL.revokeObjectURL(objUrl); objUrl = ''; }
+          if (fr && fr.parentNode) fr.parentNode.removeChild(fr);
+          fr = null;
+          this.printing = '';
+        };
+        try {
+          const token = localStorage.getItem('his_token') || '';
+          const url = '/api/inspection/reports/' + encodeURIComponent(item.name) + '/print';
+          const res = await fetch(url, { headers: { Authorization: 'Bearer ' + token } });
+          if (!res.ok) {
+            let m = '获取打印版失败（HTTP ' + res.status + '）';
+            try { const j = await res.json(); if (j && j.message) m = j.message; } catch (e) {}
+            throw new Error(m);
+          }
+          const html = await res.text();
+          objUrl = URL.createObjectURL(new Blob([html], { type: 'text/html;charset=utf-8' }));
+
+          const old = document.getElementById('__rep_print_frame');
+          if (old) old.parentNode.removeChild(old);
+
+          fr = document.createElement('iframe');
+          fr.id = '__rep_print_frame';
+          fr.style.cssText = 'position:fixed;left:-9999px;top:0;width:820px;height:1160px;border:0;opacity:0;pointer-events:none;';
+          fr.src = objUrl;
+          document.body.appendChild(fr);
+
+          await new Promise((resolve, reject) => {
+            const to = setTimeout(() => reject(new Error('加载打印版超时，请重试')), 20000);
+            fr.onload = () => { clearTimeout(to); resolve(); };
+            fr.onerror = () => { clearTimeout(to); reject(new Error('加载打印版失败，请重试')); };
+          });
+          // 报告里的注入脚本会在 load 后展开折叠卡片，等它跑完再调 print，
+          // 否则打印出来的只有标题没有数据
+          await new Promise((r) => setTimeout(r, 350));
+
+          const win = fr.contentWindow;
+          if (!win || typeof win.print !== 'function') throw new Error('当前浏览器不支持直接打印，请先「预览」后按 Ctrl+P');
+          win.addEventListener('afterprint', cleanup, { once: true });
+          win.focus();
+          win.print();
+          // Chrome/Edge 的 print() 会阻塞到对话框关闭才返回，此时任务是安全的；
+          // 个别浏览器立即返回，则靠上面的 afterprint 兜底回收。给 3 秒缓冲再清。
+          setTimeout(cleanup, 3000);
+        } catch (e) {
+          this.$toast && this.$toast(e.message, 'err');
+          cleanup();
         }
       },
       async generate() {

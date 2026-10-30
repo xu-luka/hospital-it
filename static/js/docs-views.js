@@ -14,18 +14,36 @@
   /** 上传表单「有没有改动」的比较字段 */
   const UP_KEYS = ['title', 'category_id', 'tags', 'remark'];
 
+  /**
+   * 索引状态 → 徽标。'ok' 故意不在此表里（正常状态不显示徽标）。
+   * 这几个状态在界面上都只是「一个灰点」，所以 tip 必须写清楚为什么，
+   * 否则用户看到「无正文」会以为文档坏了 —— 其实只是扫描件提不出字。
+   */
+  const IDX = {
+    '': { text: '未索引', tag: 'tag-draft', tip: '这篇文档还没有建立正文索引，暂时只能按标题/标签搜到。点「重建索引」可补上' },
+    empty: { text: '无正文', tag: 'tag-draft', tip: '文件里没有可提取的文字（多是扫描件或图片型 PDF），仍可按标题/标签/备注检索' },
+    unsupported: { text: '不索引', tag: 'tag-draft', tip: '该格式暂不支持正文索引，仍可按标题/标签/备注检索' },
+    error: { text: '索引失败', tag: 'tag-warn', tip: '提取正文时出错，文件本身仍可正常预览和下载；可点「重建索引」重试' },
+  };
+
   const V = {};
   V.DocsView = {
     template: `
     <div>
       <div class="page-title">技术文档库</div>
-      <div class="page-sub">信息科技术文档集中管理 · 支持 Word(.docx/.doc) / PDF 在线预览 · 类型可自定义</div>
+      <div class="page-sub">
+        信息科技术文档集中管理 · 支持 Word(.docx/.doc) / PDF 在线预览 · 类型可自定义
+        <span v-if="index"> · 正文可检索 <b>{{ index.ok }}</b> / {{ index.total }} 篇</span>
+      </div>
 
       <!-- 工具条 -->
       <div class="filter-bar">
-        <input class="grow" v-model="f.kw" placeholder="搜索标题 / 文件名 / 标签 / 备注" @keyup.enter="goPage(1)">
+        <input class="grow" v-model="f.kw" placeholder="搜索标题 / 文件名 / 标签 / 备注 / 正文" @keyup.enter="goPage(1)">
         <button class="btn btn-primary" @click="goPage(1)">查 询</button>
         <button v-if="canManage" class="btn btn-outline" @click="openCats">管理类型</button>
+        <button v-if="canManage" class="btn btn-outline" @click="doReindex" :disabled="reindexing" :title="reindexTitle">
+          {{ reindexing ? '索引中…' : (index && index.pending ? '重建索引（' + index.pending + '）' : '重建索引') }}
+        </button>
         <button v-if="canManage" class="btn btn-primary" @click="openUpload">＋ 上传文档</button>
       </div>
 
@@ -49,8 +67,14 @@
               <span class="doc-tag ghost" v-else>未分类</span>
               <span class="doc-ext">{{ (d.ext||'').toUpperCase() }}</span>
               <span v-if="d.tags" class="doc-tags" :title="d.tags">#{{ d.tags }}</span>
+              <!-- 只标异常状态：正文已索引是常态，每张卡都挂个绿标反而看不出哪篇有问题 -->
+              <span v-if="IDX[d.content_status]" class="tag" :class="IDX[d.content_status].tag"
+                    :title="IDX[d.content_status].tip">{{ IDX[d.content_status].text }}</span>
             </div>
-            <div class="doc-sub">{{ d.uploader_name }} · {{ fmtDate(d.created_at) }} · {{ fmtSize(d.size) }}</div>
+            <div class="doc-sub">
+              {{ d.uploader_name }} · {{ fmtDate(d.created_at) }} · {{ fmtSize(d.size) }}
+              <template v-if="d.content_status === 'ok'"> · 正文 {{ d.content_len }} 字</template>
+            </div>
           </div>
           <div class="doc-acts">
             <button class="btn btn-primary btn-sm" @click="preview(d)">预览</button>
@@ -170,9 +194,12 @@
     data() {
       return {
         allowed: ALLOWED,
+        IDX,
         categories: [],
         uncategorized: 0,
         total: 0,
+        index: null,        // { ok, empty, unsupported, error, pending, total }
+        reindexing: false,
         list: [],
         page: 1,
         pageSize: 12,
@@ -197,6 +224,12 @@
       pageCount() { return Math.max(1, Math.ceil(this.total / this.pageSize)); },
       // 上传 / 删除文档、管理文档类型都属于「技术文档库.管理」
       canManage() { return !!(window.HisPerm && window.HisPerm.can('docs.manage')); },
+      reindexTitle() {
+        const n = this.index ? this.index.pending : 0;
+        if (this.reindexing) return '正在提取正文，请勿关闭页面';
+        if (n) return '把还没建立正文索引的 ' + n + ' 篇补上（只补缺口，不动已索引的）';
+        return '所有文档都已建立正文索引。点击可全量重建（换了提取逻辑、或怀疑索引不准时用）';
+      },
       pages() {
         const pc = this.pageCount, p = this.page, arr = [];
         for (let i = Math.max(1, p - 2); i <= Math.min(pc, p + 2); i++) arr.push(i);
@@ -212,7 +245,36 @@
           this.categories = d.categories || [];
           this.uncategorized = d.uncategorized || 0;
           this.total = d.total || 0;
+          this.index = d.index || null;
         } catch (e) { this.$toast(e.message, 'err'); }
+      },
+      /**
+       * 重建正文索引。两条路径自动分流，不让用户去理解 force 是什么：
+       *   · 还有没索引过的 → 只补缺口（快，不动已有索引）
+       *   · 全都索引过了   → 问一句「全量重建」，确认才 force
+       * 服务端单次有上限（默认 200 篇），剩余量会在返回里带回来，如实提示再点一次。
+       */
+      async doReindex() {
+        if (this.reindexing) return;
+        const pending = this.index ? this.index.pending : 0;
+        let body = {};
+        if (!pending) {
+          if (!confirm('全部文档都已建立正文索引。\n\n是否全量重建？\n（换过提取逻辑、或怀疑某些文档搜不到时用；' + this.total + ' 篇会重新解析一遍，可能需要几十秒）')) return;
+          body = { force: true };
+        }
+        this.reindexing = true;
+        this.$toast(pending ? ('正在补建 ' + pending + ' 篇正文索引…') : '正在全量重建正文索引…');
+        try {
+          // api.post 只返回 data.data，服务端的 message 被挂在 __msg 上（同上传接口）
+          const r = await api.post('/docs/reindex', body) || {};
+          const msg = r.__msg || '索引完成';
+          // 有失败就是 err；只是「这轮没跑完、还剩 N 篇」用中性色，别把正常情况报成错误
+          this.$toast(msg, r.error ? 'err' : (r.remaining ? '' : 'ok'));
+          if (r.failed && r.failed.length) console.warn('[docs] 索引失败明细', r.failed);
+          this.loadCats();
+          this.loadDocs();
+        } catch (e) { this.$toast(e.message, 'err'); }
+        finally { this.reindexing = false; }
       },
       async loadDocs() {
         try {

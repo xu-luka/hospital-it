@@ -178,8 +178,118 @@ function readReport(reportsDir, name) {
  * 数据经 /api/inspection/reports 以 JSON 提供。安全相关的四个函数原样保留。
  */
 
+// ==================== 打印 / 导出 PDF 增强 ====================
+
+/**
+ * 打印版样式。
+ *
+ * 关键点（都是实测踩出来的）：
+ *  1. 报告卡片默认是折叠的（.card-body{display:none}），打印必须强制展开，
+ *     否则导出的 PDF 只有一排标题、没有任何巡检数据；
+ *  2. 用户可能在页面上点过「只看严重」，那次点击会把其它卡片写成
+ *     style="display:none"（内联样式），CSS 覆盖不掉 —— 所以脚本里还要在
+ *     beforeprint 时把内联 display 清掉；
+ *  3. 浏览器默认不打印背景色，不加 print-color-adjust 的话「正常/严重」的红绿
+ *     色块全变白，报告在纸面上就失去意义了；
+ *  4. @page 设成 A4 + 12mm 边距，页眉页脚由浏览器自带（页码它自己会加）。
+ */
+const PRINT_CSS = `
+@page { size: A4; margin: 12mm 10mm; }
+.print-toolbar {
+  position: fixed; top: 12px; right: 12px; z-index: 9999;
+  display: flex; align-items: center; gap: 10px;
+  background: #ffffff; border: 1px solid #d1d5db; border-radius: 10px;
+  padding: 10px 14px; box-shadow: 0 6px 20px rgba(15,23,42,.14);
+  font: 13px/1.4 "Segoe UI","Microsoft YaHei",Arial,sans-serif;
+}
+.print-toolbar .hint { color: #6b7280; max-width: 260px; }
+.print-toolbar button {
+  border: 0; border-radius: 7px; padding: 8px 14px; font-size: 13px;
+  font-weight: 600; cursor: pointer; background: #2563eb; color: #fff;
+}
+.print-toolbar button.ghost { background: #f3f4f6; color: #374151; }
+.print-toolbar button:hover { filter: brightness(1.06); }
+@media print {
+  .print-toolbar { display: none !important; }
+  body { background: #fff !important; padding: 0 !important; }
+  .wrap { max-width: none !important; }
+  .filters { display: none !important; }
+  .card { border: 1px solid #c7cdd6 !important; break-inside: auto; page-break-inside: auto; }
+  .card-head { background: #f3f4f6 !important; break-after: avoid; page-break-after: avoid; }
+  .card-body { display: block !important; }
+  .card.open .card-body { display: block !important; }
+  .arrow { display: none !important; }
+  .summary { grid-template-columns: repeat(5, 1fr) !important; gap: 8px !important; }
+  .stat { border: 1px solid #c7cdd6 !important; break-inside: avoid; padding: 10px 12px !important; }
+  .stat .num { font-size: 20px !important; }
+  h1 { font-size: 17pt !important; }
+  .meta { margin-bottom: 10px !important; }
+  table { font-size: 10.5pt !important; }
+  th, td { padding: 4px 6px !important; }
+  thead { display: table-header-group; }   /* 表格跨页时重复表头 */
+  pre { max-height: none !important; border: 1px solid #334155 !important; }
+  .kv { grid-template-columns: repeat(3, 1fr) !important; gap: 6px !important; }
+  .kv .item { break-inside: avoid; padding: 6px 8px !important; }
+  * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+}
+`;
+
+/** HTML 属性/文本转义（报告名来自文件名，仍按不可信处理） */
+function esc(s) {
+  return String(s === null || s === undefined ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+/**
+ * 给任意一份巡检报告 HTML 注入「打印 / 导出 PDF」能力。
+ * 对**已经生成的历史报告**同样有效 —— 不改生成器、不需要重新巡检。
+ * @param {string} html 报告原文
+ * @param {{name?:string}} opts
+ * @returns {string}
+ */
+function enhanceForPrint(html, opts) {
+  const src = String(html || '');
+  // 报告文件名只用来在工具条上标一下「你在打哪一份」，仍按不可信文本转义
+  const name = esc((opts && opts.name) || '巡检报告');
+
+  const toolbar = `
+<div class="print-toolbar" id="print-toolbar">
+  <span class="hint"><b>${name}</b><br>在打印对话框里把「目标打印机」选成「另存为 PDF」即可导出文件；纸张选 A4、勾选「背景图形」效果最佳。</span>
+  <button type="button" onclick="window.print()">打印 / 另存为 PDF</button>
+  <button type="button" class="ghost" onclick="window.close()">关闭</button>
+</div>
+<script>
+(function () {
+  // 用户在页面上点过筛选按钮会留下 style="display:none"，打印时必须还原，
+  // 否则 PDF 里会缺掉被筛掉的设备（而且看起来像是「报告本身没数据」）。
+  function expandAll() {
+    var cards = document.querySelectorAll('.card');
+    for (var i = 0; i < cards.length; i++) {
+      cards[i].style.display = '';
+      cards[i].classList.add('open');
+    }
+  }
+  expandAll();
+  window.addEventListener('beforeprint', expandAll);
+  window.addEventListener('afterprint', function () {});
+})();
+</script>`;
+
+  let out = src;
+  const styleTag = '<style id="print-enhance">' + PRINT_CSS + '</style>';
+  if (/<\/head>/i.test(out)) out = out.replace(/<\/head>/i, styleTag + '\n</head>');
+  else out = styleTag + out;
+
+  // 工具条放在 body 开头，否则被超长报告推到页面最底部，用户根本看不到
+  if (/<body[^>]*>/i.test(out)) out = out.replace(/<body([^>]*)>/i, (m) => m + toolbar);
+  else out = toolbar + out;
+
+  return out;
+}
 
 module.exports = {
   REPORT_NAME_RE, MAX_REPORT_BYTES,
-  resolveReportDir, safeReportPath, listReports, readReport, prettyStamp
+  resolveReportDir, safeReportPath, listReports, readReport, prettyStamp,
+  enhanceForPrint, PRINT_CSS,
 };

@@ -135,6 +135,120 @@ router.get('/expiring', (req, res) => {
   res.json({ code: 0, data: rows.map(attachPaymentInfo) });
 });
 
+// GET /api/contracts/payment-summary - 付款完成率汇总（须在 /:id 之前）
+//
+// 单条合同的进度（paid_amount / pay_percent）列表接口早就返回了，缺的是「整体看到什么程度」：
+// 全院合同一共该付多少、已经付了多少、有几份一分没付、哪几份还欠最多。
+// 口径：
+//   · 完成率 = 已付合计 / 合同额合计（只算 amount>0 的合同，否则 0 元合同会把分母拉歪）；
+//   · 分档按单份合同的完成率：0% 未付款 / 0<x<100% 部分付款 / >=100% 已付清；
+//   · 「已付清」用 >= 而不是 ==：历史数据里偶尔有多付（改造前没拦），不能因此从统计里消失。
+router.get('/payment-summary', (req, res) => {
+  try {
+    const totals = db.prepare(
+      `SELECT COUNT(*) AS contracts,
+              COALESCE(SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END), 0) AS total_amount,
+              COALESCE(SUM(amount), 0) AS all_amount
+       FROM contracts`
+    ).get();
+
+    // 每份合同的已付金额（一次聚合，避免 N+1）
+    const perContract = db.prepare(
+      `SELECT c.id, c.contract_no, c.title, c.category, c.status, c.amount, c.end_date,
+              COALESCE(p.paid, 0) AS paid
+       FROM contracts c
+       LEFT JOIN (SELECT contract_id, SUM(amount) AS paid FROM payments GROUP BY contract_id) p
+              ON p.contract_id = c.id`
+    ).all();
+
+    const paidTotal = perContract.reduce((s, r) => s + (Number(r.paid) || 0), 0);
+    const totalAmount = Number(totals.total_amount) || 0;
+    const unpaidTotal = Math.max(totalAmount - paidTotal, 0);
+
+    const buckets = { none: 0, partial: 0, full: 0 };
+    const byCategory = {};
+    const byStatus = {};
+    let overdueUnpaid = 0;        // 已到期但未付清的合同数（催款最该盯的）
+    const topUnpaid = [];
+
+    perContract.forEach((r) => {
+      const amount = Number(r.amount) || 0;
+      const paid = Number(r.paid) || 0;
+      const pct = amount > 0 ? (paid / amount) * 100 : (paid > 0 ? 100 : 0);
+      const unpaid = Math.max(amount - paid, 0);
+
+      if (amount > 0 || paid > 0) {
+        if (pct <= 0) buckets.none++;
+        else if (pct < 100) buckets.partial++;
+        else buckets.full++;
+      }
+
+      const cat = String(r.category || '').trim() || '未分类';
+      const st = String(r.status || '').trim() || '进行中';
+      [
+        [byCategory, cat],
+        [byStatus, st],
+      ].forEach(([map, key]) => {
+        const b = map[key] || (map[key] = { name: key, count: 0, amount: 0, paid: 0 });
+        b.count++;
+        b.amount += amount;
+        b.paid += paid;
+      });
+
+      if (unpaid > 0) {
+        // 到期日已过且没付清 → 属于「该催没催」的
+        if (r.end_date) {
+          const t = Date.parse(String(r.end_date).replace(/[ T]/g, 'T') + (String(r.end_date).length <= 10 ? 'T00:00:00' : ''));
+          if (isFinite(t) && t < Date.now()) overdueUnpaid++;
+        }
+        topUnpaid.push({
+          id: r.id, contract_no: r.contract_no, title: r.title, status: r.status,
+          amount: amount, paid: paid, unpaid: unpaid,
+          pay_percent: Math.round(pct * 10) / 10, end_date: r.end_date || '',
+        });
+      }
+    });
+
+    const round1 = (n) => Math.round((Number(n) || 0) * 10) / 10;
+    const finish = (arr) => arr.map((b) => Object.assign({}, b, {
+      amount: round1(b.amount),
+      paid: round1(b.paid),
+      unpaid: round1(Math.max(b.amount - b.paid, 0)),
+      pay_percent: b.amount > 0 ? round1((b.paid / b.amount) * 100) : 0,
+    })).sort((a, b) => b.amount - a.amount);
+
+    // 本月回款（按 pay_date 落在本月）
+    let monthPaid = 0;
+    try {
+      monthPaid = db.prepare(
+        `SELECT COALESCE(SUM(amount),0) AS s FROM payments
+         WHERE substr(pay_date, 1, 7) = strftime('%Y-%m', 'now', 'localtime')`
+      ).get().s;
+    } catch (e) { monthPaid = 0; }
+
+    res.json({
+      code: 0,
+      data: {
+        contracts: totals.contracts,
+        total_amount: round1(totalAmount),
+        paid_amount: round1(paidTotal),
+        unpaid_amount: round1(unpaidTotal),
+        pay_percent: totalAmount > 0 ? round1((paidTotal / totalAmount) * 100) : 0,
+        month_paid: round1(monthPaid),
+        buckets: buckets,
+        overdue_unpaid: overdueUnpaid,
+        by_category: finish(Object.keys(byCategory).map((k) => byCategory[k])),
+        by_status: finish(Object.keys(byStatus).map((k) => byStatus[k])),
+        top_unpaid: topUnpaid.sort((a, b) => b.unpaid - a.unpaid).slice(0, 10)
+          .map((r) => Object.assign({}, r, { amount: round1(r.amount), paid: round1(r.paid), unpaid: round1(r.unpaid) })),
+      },
+    });
+  } catch (e) {
+    // 汇算出错不该让合同页打不开，前端会提示但不白屏
+    res.json({ code: 0, message: '付款统计失败：' + ((e && e.message) || e), data: null });
+  }
+});
+
 // GET /api/contracts/:id - 详情 + 附件 + 付款记录
 router.get('/:id', (req, res) => {
   const row = db.prepare(

@@ -101,10 +101,11 @@
     data() { return {
       keyword: '', category: '', status: '', sort: 'id_desc',
       rows: [], total: 0, page: 1, pageSize: 10, categories: [],
+      paySum: null,
       importOpen: false, importFile: null, importing: false, importResult: null, exporting: false,
       detailId: null, editData: null
     }; },
-    async mounted() { await this.loadCategories(); await this.load(); },
+    async mounted() { await this.loadCategories(); await this.loadSum(); await this.load(); },
     computed: {
       // 写操作（新增/编辑/删除/导入）看「合同台账.管理」；导出是读，不受限
       canManage() { return !!(window.HisPerm && window.HisPerm.can('contracts.manage')); },
@@ -118,6 +119,25 @@
         try { const r = await api.get('/api/contracts?' + q); this.rows = r.list; this.total = r.total; } catch (e) { this.$toast(e.message, 'err'); }
       },
       async loadCategories() { try { this.categories = await api.get('/api/contracts/categories'); } catch (e) {} },
+      // 回款汇总：与列表分开请求（列表会随筛选变化，汇总始终看全局）
+      async loadSum() {
+        try { this.paySum = await api.get('/api/contracts/payment-summary'); }
+        catch (e) { this.paySum = null; }   // 汇总失败不影响列表可用
+      },
+      // 完成率配色：100% 绿、60% 以上蓝、30% 以上琥珀、其余红。
+      // 阈值不是拍脑袋：内网合同常见「按验收节点分批付款」，60% 上下是正常进度，
+      // 低于 30% 基本就是该催了。
+      rateClass(pct) {
+        const n = Number(pct) || 0;
+        if (n >= 100) return 'ok';
+        if (n >= 60) return 'info';
+        if (n >= 30) return 'warn';
+        return 'bad';
+      },
+      barWidth(pct) {
+        const n = Math.max(0, Math.min(100, Number(pct) || 0));
+        return n + '%';
+      },
       search() { this.page = 1; this.load(); },
       reset() { this.keyword=''; this.category=''; this.status=''; this.sort='id_desc'; this.page=1; this.load(); },
       setPage(p) { if (p < 1 || p > this.totalPages) return; this.page = p; this.load(); },
@@ -166,6 +186,7 @@
       closeEdit() { this.editData = null; },
       afterContractChange() {
         this.detailId = null; this.editData = null;
+        this.loadSum();
         this.load();
       },
       goRemind() { location.hash = '#/remind'; },
@@ -175,6 +196,45 @@
     <div class="cm-root">
       <div class="page-title">合同台账</div>
       <div class="page-sub">全部合同记录，共 {{ total }} 份</div>
+
+      <!-- 回款总览：回答「整体收到什么程度」，表格回答「这一份收到什么程度」 -->
+      <div class="stat-strip" v-if="paySum">
+        <div class="stat-cell">
+          <div class="k">合同总额</div>
+          <div class="v">{{ fmtMoney(paySum.total_amount) }}</div>
+          <div class="s">共 {{ paySum.contracts }} 份合同</div>
+        </div>
+        <div class="stat-cell">
+          <div class="k">已回款</div>
+          <div class="v ok">{{ fmtMoney(paySum.paid_amount) }}</div>
+          <div class="s">本月 {{ fmtMoney(paySum.month_paid) }}</div>
+        </div>
+        <div class="stat-cell">
+          <div class="k">未回款</div>
+          <div class="v bad">{{ fmtMoney(paySum.unpaid_amount) }}</div>
+          <div class="s">已到期未付清 {{ paySum.overdue_unpaid }} 份</div>
+        </div>
+        <div class="stat-cell">
+          <div class="k">回款完成率</div>
+          <div class="v info">{{ paySum.pay_percent }}%</div>
+          <div class="bar-track" style="margin-top:7px">
+            <i class="bar-fill" :class="rateClass(paySum.pay_percent)" :style="{width: barWidth(paySum.pay_percent)}"></i>
+          </div>
+        </div>
+        <div class="stat-cell">
+          <div class="k">付款分档</div>
+          <div class="stat-chips">
+            <span class="chip">未付 {{ paySum.buckets.none }}</span>
+            <span class="chip">部分付 {{ paySum.buckets.partial }}</span>
+            <span class="chip">已付清 {{ paySum.buckets.full }}</span>
+          </div>
+          <div class="s">按单份合同完成率分档</div>
+        </div>
+      </div>
+      <div class="mini-note" v-if="paySum">
+        完成率 = 已回款合计 ÷ 合同总额（只计金额大于 0 的合同）；「已付清」含历史上多付的情况。
+      </div>
+
       <div class="panel">
         <div class="toolbar">
           <input v-model="keyword" placeholder="搜索名称/编号/甲乙方" @keyup.enter="search" style="width:200px">
@@ -190,15 +250,19 @@
         </div>
         <table class="cm-table">
           <thead>
-            <tr><th>合同编号</th><th>名称</th><th>分类</th><th>乙方</th><th class="num">金额(元)</th><th class="num">已付/未付</th><th>到期日期</th><th>状态</th><th class="ops">操作</th></tr>
+            <tr><th>合同编号</th><th>名称</th><th>分类</th><th>乙方</th><th class="num">金额(元)</th><th class="num">已付/未付</th><th>回款进度</th><th>到期日期</th><th>状态</th><th class="ops">操作</th></tr>
           </thead>
           <tbody>
-            <tr v-if="!rows.length"><td colspan="9" class="empty">暂无数据，点击右上角新增</td></tr>
+            <tr v-if="!rows.length"><td colspan="10" class="empty">暂无数据，点击右上角新增</td></tr>
             <tr v-for="r in rows" :key="r.id">
               <td class="mono">{{ r.contract_no }}</td><td class="title-cell">{{ r.title }}</td>
               <td><span class="chip">{{ r.category || '-' }}</span></td>
               <td>{{ r.party_b || '-' }}</td><td class="num">{{ fmtMoney(r.amount) }}</td>
               <td class="num"><span style="color:var(--ok)">{{ fmtMoney(r.paid_amount) }}</span> / <span style="color:var(--bad)">{{ fmtMoney(r.unpaid_amount) }}</span></td>
+              <td class="bar-cell">
+                <div class="bar-track"><i class="bar-fill" :class="rateClass(r.pay_percent)" :style="{width: barWidth(r.pay_percent)}"></i></div>
+                <span class="pct">{{ r.pay_percent || 0 }}%</span>
+              </td>
               <td class="mono">{{ r.end_date || '-' }}</td>
               <td><span class="tag" :class="statusTag(r.status)">{{ r.status }}</span></td>
               <td class="ops"><a @click="openDetail(r)" style="cursor:pointer">详情</a> <a v-if="canManage" @click="editContract(r)" style="cursor:pointer;margin-left:8px">编辑</a></td>
@@ -767,13 +831,15 @@
 
   /* ==================== 操作日志（统一日志） ==================== */
   V.LogsView = {
-    data() { return { rows: [], actions: [], keyword: '', action: '', page: 1, pageSize: 20, total: 0, open: {} }; },
+    data() { return { rows: [], actions: [], keyword: '', action: '', from: '', to: '', page: 1, pageSize: 20, total: 0, open: {}, exporting: false }; },
     async mounted() { await this.loadActions(); await this.load(); },
     methods: {
       async load() {
         const q = new URLSearchParams({ page: this.page, pageSize: this.pageSize });
         if (this.keyword) q.set('keyword', this.keyword);
         if (this.action) q.set('action', this.action);
+        if (this.from) q.set('from', this.from);
+        if (this.to) q.set('to', this.to);
         try {
           const r = await api.get('/api/logs?' + q);
           // 预处理成视图专用字段：后端落库的 detail 既有纯文本，也有 JSON 字符串
@@ -793,8 +859,27 @@
         } catch (e) { this.$toast(e.message, 'err'); }
       },
       async loadActions() { try { this.actions = await api.get('/api/logs/actions'); } catch (e) {} },
+      // 导出当前筛选结果（与列表同一套条件，含日期范围）
+      async exportExcel() {
+        if (this.exporting) return;
+        if (this.from && this.to && this.from > this.to) {
+          this.$toast('开始日期不能晚于结束日期', 'err');
+          return;
+        }
+        this.exporting = true;
+        try {
+          const q = new URLSearchParams();
+          if (this.keyword) q.set('keyword', this.keyword);
+          if (this.action) q.set('action', this.action);
+          if (this.from) q.set('from', this.from);
+          if (this.to) q.set('to', this.to);
+          await api.download('/api/logs/export?' + q, '操作日志_' + todayStr() + '.xlsx');
+          this.$toast('导出完成，文件已开始下载');
+        } catch (e) { this.$toast(e.message, 'err'); }
+        this.exporting = false;
+      },
       search() { this.page = 1; this.open = {}; this.load(); },
-      reset() { this.keyword = ''; this.action = ''; this.page = 1; this.open = {}; this.load(); },
+      reset() { this.keyword = ''; this.action = ''; this.from = ''; this.to = ''; this.page = 1; this.open = {}; this.load(); },
       setPage(p) { if (p < 1 || p > this.totalPages) return; this.page = p; this.open = {}; this.load(); },
       dateOf(s) { const m = String(s || '').match(/^(\d{4}-\d{2}-\d{2})/); return m ? m[1] : (s || '-'); },
       clockOf(s) { const m = String(s || '').match(/(\d{2}:\d{2}(?::\d{2})?)/); return m ? m[1] : ''; },
@@ -858,8 +943,13 @@
         <div class="toolbar">
           <input v-model="keyword" placeholder="搜索用户 / 详情关键词" style="width:210px" @keyup.enter="search">
           <select v-model="action" @change="search" style="min-width:160px"><option value="">全部操作</option><option v-for="a in actions" :value="a">{{ a }}</option></select>
+          <input type="date" v-model="from" @change="search" title="开始日期" style="width:140px">
+          <span class="muted" style="color:var(--quiet)">至</span>
+          <input type="date" v-model="to" @change="search" title="结束日期" style="width:140px">
           <button class="btn btn-primary btn-sm" @click="search">查询</button>
           <button class="btn btn-ghost btn-sm" @click="reset">重置</button>
+          <div class="grow"></div>
+          <button class="btn btn-outline btn-sm" @click="exportExcel" :disabled="exporting">{{ exporting ? '导出中…' : '导出Excel' }}</button>
         </div>
         <div class="table-wrap">
           <table class="tbl logs-table">

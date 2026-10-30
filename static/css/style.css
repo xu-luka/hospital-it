@@ -1754,17 +1754,21 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-base); }
 .remind-party { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* 工单列表 */
-.iss-table { table-layout: fixed; min-width: 1150px; }
+.iss-table { table-layout: fixed; min-width: 1240px; }
 .iss-table .c-chk   { width: 38px; }
 .iss-table .c-no    { width: 140px; }
 .iss-table .c-cat   { width: 96px; }
 .iss-table .c-mod   { width: 100px; }
 .iss-table .c-urg   { width: 84px; }
 .iss-table .c-st    { width: 84px; }
+.iss-table .c-sla   { width: 106px; }
 .iss-table .c-user  { width: 124px; }
 .iss-table .c-assign{ width: 96px; }
 .iss-table .c-time  { width: 132px; }
 .iss-table .c-ops   { width: 84px; }
+/* 工期在计时中（未超期）不套彩色标签，否则一屏全是彩色药丸，真正超期的反而看不出来 */
+.iss-table .sla-cell { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.iss-table .sla-plain { font-size: var(--fs-sm); color: var(--muted); }
 .iss-title {
   font-weight: 600;
   color: var(--text);
@@ -3212,3 +3216,92 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-base); }
    否则一屏看不到几行，反而失去了「一眼看全」的意义 */
 .ipmap-grid.dense { gap: 2px; max-width: 100%; }
 .ipmap-grid.dense .ipmap-cell { height: 14px; }
+
+/* ============================================================================
+   十、统计条与进度条（2026-10-30：合同回款率 / 工单超期 / 文档索引共用）
+   ----------------------------------------------------------------------------
+   这三处都是「几个数字 + 一条细进度」的结构，共用一套语汇才不会各长一付样子。
+   刻意不做成卡片墙：数值用等宽字、单位用小字，扫视时先看到数再看说明。
+   ============================================================================ */
+.stat-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+  gap: 1px;                       /* 用 1px 缝隙露出底色当分隔线，比给每格加边框整齐 */
+  background: var(--line-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  overflow: hidden;
+  margin-bottom: 14px;
+}
+.stat-cell {
+  background: var(--surface-2);
+  padding: 11px 14px;
+}
+.stat-cell .k {
+  font-size: var(--fs-xs);
+  color: var(--quiet);
+  letter-spacing: .04em;
+}
+.stat-cell .v {
+  font-family: var(--font-mono);
+  font-size: var(--fs-lg);
+  color: var(--text);
+  margin-top: 3px;
+  line-height: 1.25;
+  white-space: nowrap;
+}
+/* 数值的四档语义色，与 .tag / .bar-fill 保持一致 */
+.stat-cell .v.ok   { color: var(--ok); }
+.stat-cell .v.warn { color: var(--warn); }
+.stat-cell .v.bad  { color: var(--bad); }
+.stat-cell .v.info { color: var(--info); }
+.stat-cell .s {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+/* 细进度条：表格里也能放得下（高度 5px，比一行文字还矮） */
+.bar-track {
+  height: 5px;
+  background: var(--surface-3);
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width var(--dur) var(--ease);
+}
+.bar-fill.ok   { background: var(--ok); }
+.bar-fill.warn { background: var(--warn); }
+.bar-fill.bad  { background: var(--bad); }
+.bar-fill.info { background: var(--info); }
+.bar-cell { min-width: 112px; }
+.bar-cell .pct {
+  display: block;
+  margin-top: 3px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+/* 统计条里的小胶囊（「未付款 6 份」这类计数） */
+.stat-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+.stat-chips .chip { font-size: var(--fs-xs); }
+
+/* 说明性小字：图表 / 统计下方那句「口径是什么」，避免看的人自己猜 */
+.mini-note {
+  font-size: var(--fs-xs);
+  color: var(--quiet);
+  margin: 6px 0 14px;
+  line-height: 1.6;
+}

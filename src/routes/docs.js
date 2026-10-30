@@ -16,6 +16,8 @@ const { authRequired, guardModule } = require('../auth');
 const { fixFilename } = require('../db'); // 与问题附件同一套中文名修复
 const { logAction } = require('../utils');
 const docpreview = require('../docpreview');
+// 正文提取（docx 走自写的最小 zip 解析，pdf 尽力而为，doc 复用 docpreview）
+const doctext = require('../doctext');
 
 const router = express.Router();
 // 技术文档库：读要 view、上传/改名/删除要 manage
@@ -81,6 +83,36 @@ function textCachePath(id) {
   return path.join(config.DOCS_CONVERT_DIR, 'text-' + Number(id) + '.html');
 }
 
+/**
+ * 建/重建某篇文档的正文索引。
+ *
+ * 设计取舍：
+ *   · 同步 await —— 一篇几 MB 的 docx 提取是几十毫秒级，比「后台异步 + 状态轮询」
+ *     简单得多，也不会出现「刚上传完搜不到，过一会儿又搜到了」的困惑。
+ *   · 失败不影响上传 —— 索引是增强能力，提不出正文不该让文档存不进来；
+ *     失败原因落进 content_status / indexed_at，界面上照实标注。
+ *   · 永不抛异常，只返回结果，调用方无需 try/catch。
+ */
+async function indexDocument(id, row) {
+  const d = row || db.prepare('SELECT * FROM documents WHERE id = ?').get(Number(id));
+  if (!d) return { id: id, status: 'error', note: '文档不存在' };
+  const kind = String(d.real_ext || d.ext || '').toLowerCase().replace(/^\./, '');
+  const full = path.join(config.DOCS_UPLOAD_DIR, d.stored_name);
+  let r;
+  try {
+    r = await doctext.extract(full, kind);
+  } catch (e) {
+    r = { ok: false, text: '', status: 'error', note: '提取异常：' + ((e && e.message) || e) };
+  }
+  try {
+    db.prepare('UPDATE documents SET content_text = ?, content_status = ?, indexed_at = datetime(\'now\',\'localtime\') WHERE id = ?')
+      .run(r.ok ? r.text : '', r.status || 'error', d.id);
+  } catch (e) {
+    return { id: d.id, status: 'error', note: '写库失败：' + ((e && e.message) || e) };
+  }
+  return { id: d.id, status: r.status, note: r.note || '', chars: r.ok ? r.text.length : 0 };
+}
+
 // ==================== 文档类型（可自定义） ====================
 // GET /api/docs/categories —— 列表（含每类文档数、未分类数、总数）
 router.get('/categories', (req, res) => {
@@ -94,7 +126,23 @@ router.get('/categories', (req, res) => {
     ).all();
     const uncategorized = db.prepare('SELECT COUNT(*) c FROM documents WHERE category_id IS NULL').get().c;
     const total = db.prepare('SELECT COUNT(*) c FROM documents').get().c;
-    res.json({ code: 0, data: { categories, uncategorized, total } });
+    // 索引概况：并进这个已有的汇总接口，前端一次请求就够了（不为它单开路由）
+    // pending 的口径与 /reindex 的补索条件严格一致，否则按钮上写着「还有 3 篇」点进去却说没有
+    const idxRows = db.prepare(
+      `SELECT content_status AS s, COUNT(*) AS c FROM documents GROUP BY content_status`
+    ).all();
+    const index = { ok: 0, empty: 0, unsupported: 0, error: 0, pending: 0, total: total };
+    for (const r of idxRows) {
+      const k = r.s || 'pending';   // 空状态 = 从未索引过
+      if (index[k] === undefined) index[k] = 0;
+      index[k] += r.c;
+    }
+    // pending 用与 /reindex 完全相同的条件再点一次，两个数字必须对得上
+    const pendRow = db.prepare(
+      "SELECT COUNT(*) c FROM documents WHERE content_status = '' OR indexed_at = ''"
+    ).get();
+    index.pending = pendRow ? pendRow.c : 0;
+    res.json({ code: 0, data: { categories, uncategorized, total, index } });
   } catch (e) {
     res.status(500).json({ code: 500, message: '读取类型失败：' + e.message });
   }
@@ -150,8 +198,10 @@ router.get('/', (req, res) => {
     const params = [];
     if (kw) {
       const lk = '%' + kw + '%';
-      where.push('(d.title LIKE ? OR d.original_name LIKE ? OR d.tags LIKE ? OR d.remark LIKE ?)');
-      params.push(lk, lk, lk, lk);
+      // 正文也参与检索：文档库最有价值的内容恰恰在正文里（如「这台交换机的默认口令」
+      // 只写在操作手册第 3 页），只搜标题/tags 等于把大部分内容挡在门外。
+      where.push('(d.title LIKE ? OR d.original_name LIKE ? OR d.tags LIKE ? OR d.remark LIKE ? OR d.content_text LIKE ?)');
+      params.push(lk, lk, lk, lk, lk);
     }
     if (cat === 'none') where.push('d.category_id IS NULL');
     else if (cat) { where.push('d.category_id = ?'); params.push(Number(cat)); }
@@ -160,7 +210,9 @@ router.get('/', (req, res) => {
     const total = db.prepare('SELECT COUNT(*) c FROM documents d ' + w).get(...params).c;
     const rows = db.prepare(
       `SELECT d.id, d.title, d.original_name, d.ext, d.real_ext, d.converted_name, d.size, d.tags, d.remark,
-              d.uploader_name, d.created_at, d.category_id, c.name AS category_name
+              d.uploader_name, d.created_at, d.category_id, d.content_status, d.indexed_at,
+              CASE WHEN d.content_text IS NULL OR d.content_text = '' THEN 0 ELSE length(d.content_text) END AS content_len,
+              c.name AS category_name
        FROM documents d
        LEFT JOIN doc_categories c ON d.category_id = c.id
        ${w}
@@ -180,7 +232,9 @@ router.get('/', (req, res) => {
 router.get('/:id', (req, res) => {
   const d = db.prepare(
     `SELECT d.id, d.title, d.original_name, d.ext, d.real_ext, d.converted_name, d.size, d.tags, d.remark,
-            d.uploader_name, d.created_at, d.category_id, c.name AS category_name
+            d.uploader_name, d.created_at, d.category_id, d.content_status, d.indexed_at,
+            CASE WHEN d.content_text IS NULL OR d.content_text = '' THEN 0 ELSE length(d.content_text) END AS content_len,
+            c.name AS category_name
      FROM documents d
      LEFT JOIN doc_categories c ON d.category_id = c.id
      WHERE d.id = ?`
@@ -250,19 +304,84 @@ router.post('/', upload.single('file'), (req, res) => {
     );
 
     logAction(req, '上传技术文档', title + (categoryId ? ' [类型#' + categoryId + ']' : ' [未分类]'));
+
+    // 建正文索引（失败不影响上传成功，只把状态与原因带回去）
+    const idx = await indexDocument(info.lastInsertRowid);
+    const idxNote = idx.status === 'ok'
+      ? ''
+      : ('正文索引：' + ((doctext.STATUS_LABEL || {})[idx.status] || idx.status) + (idx.note ? '（' + idx.note + '）' : ''));
+
     res.json({
       code: 0,
       data: {
         id: info.lastInsertRowid,
         real_ext: kind.ext,
         preview_kind: convertedName ? 'docx' : kind.kind,
+        content_status: idx.status,
+        content_len: idx.chars || 0,
       },
-      message: [kind.note, convertNotice].filter(Boolean).join('；'),
+      message: [kind.note, convertNotice, idxNote].filter(Boolean).join('；'),
     });
   })().catch((e) => {
     try { if (req.file) fs.unlinkSync(req.file.path); } catch (er) { /* ignore */ }
     res.status(500).json({ code: 500, message: '上传处理失败：' + e.message });
   });
+});
+
+// POST /api/docs/reindex —— 重建正文索引
+//
+// 三种用法：
+//   {}                    只补「从未索引过」的（升级后第一次用，把历史文档补上）
+//   { force: true }       全部重建（换了提取逻辑、或发现索引不准时）
+//   { ids: [1,2,3] }      指定若干篇
+// 单次处理上限默认 200 篇：几百份文档一次跑完要几十秒，HTTP 容易超时，
+// 返回 remaining 让前端提示「还有 N 篇，再点一次」——比偷偷截断诚实。
+router.post('/reindex', async (req, res) => {
+  try {
+    const b = req.body || {};
+    const limit = Math.min(1000, Math.max(1, Number(b.limit) || 200));
+
+    let rows;
+    if (Array.isArray(b.ids) && b.ids.length) {
+      const ids = b.ids.map((x) => Number(x)).filter((x) => isFinite(x) && x > 0);
+      if (!ids.length) return res.status(400).json({ code: 400, message: 'ids 里没有合法的文档编号' });
+      rows = db.prepare(`SELECT * FROM documents WHERE id IN (${ids.map(() => '?').join(',')})`).all(...ids);
+    } else if (b.force) {
+      rows = db.prepare("SELECT * FROM documents ORDER BY id ASC LIMIT ?").all(limit);
+    } else {
+      rows = db.prepare(
+        "SELECT * FROM documents WHERE content_status = '' OR indexed_at = '' ORDER BY id ASC LIMIT ?"
+      ).all(limit);
+    }
+
+    const stat = { ok: 0, empty: 0, unsupported: 0, error: 0, total: rows.length };
+    const failed = [];
+    for (const r of rows) {
+      const out = await indexDocument(r.id, r);
+      if (stat[out.status] === undefined) stat[out.status] = 0;
+      stat[out.status]++;
+      if (out.status === 'error') failed.push({ id: r.id, title: r.title, note: out.note });
+    }
+
+    const remainRow = db.prepare(
+      "SELECT COUNT(*) c FROM documents WHERE content_status = '' OR indexed_at = ''"
+    ).get();
+    const remaining = remainRow ? remainRow.c : 0;
+
+    logAction(req, '重建文档索引', {
+      total: stat.total, ok: stat.ok, unsupported: stat.unsupported, error: stat.error, force: !!b.force,
+    });
+
+    const parts = [`本次处理 ${stat.total} 篇`, `成功 ${stat.ok} 篇`];
+    if (stat.unsupported) parts.push(`不支持 ${stat.unsupported} 篇`);
+    if (stat.empty) parts.push(`无正文 ${stat.empty} 篇`);
+    if (stat.error) parts.push(`失败 ${stat.error} 篇`);
+    if (remaining) parts.push(`仍有 ${remaining} 篇未索引，可再次执行`);
+
+    res.json({ code: 0, message: parts.join('，'), data: Object.assign({ remaining: remaining, failed: failed.slice(0, 20) }, stat) });
+  } catch (e) {
+    res.status(500).json({ code: 500, message: '重建索引失败：' + ((e && e.message) || e) });
+  }
 });
 
 // GET /api/docs/:id/download —— 下载

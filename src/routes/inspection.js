@@ -88,6 +88,31 @@ router.get('/reports/:name/raw', authRequired, (req, res) => {
   res.end(r.html);
 });
 
+/**
+ * 报告打印版（导出 PDF 用）。
+ *
+ * 为什么不做服务端直出 PDF：内网服务器不联网、不能装包，而生成带中文的 PDF
+ * 需要把一份中文字体嵌进文件（10MB 起步，还要做子集化）；相比之下浏览器自带的
+ * 「另存为 PDF」用的是本机已装字体，排版更准、零依赖。所以这一版提供的是
+ * 「打印优化版面 + 一键调起打印」，用户在对话框里选「另存为 PDF」即可。
+ *
+ * 与 /raw 的区别只在注入的打印样式与工具条，安全校验完全一致（同样走 safeReportPath）。
+ */
+router.get('/reports/:name/print', authRequired, (req, res) => {
+  const name = normalizeName(req.params.name);
+  const r = store.readReport(scheduler.state.reportsDir, name);
+  if (!r.ok) {
+    if (r.code === 400) logAction(req.user, '报告.路径拒绝', { name: String(name).slice(0, 120) });
+    return res.status(r.code).json({ code: r.code, message: r.message });
+  }
+  const html = store.enhanceForPrint(r.html, { name: r.name });
+  logAction(req.user, '报告.导出PDF', { name: r.name, size: r.size });
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Content-Security-Policy', "default-src 'self' 'unsafe-inline' 'unsafe-eval'; img-src 'self' data:");
+  res.end(html);
+});
+
 /* ---------------- 手动触发巡检 ---------------- */
 
 router.post('/run', authRequired, async (req, res) => {

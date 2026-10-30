@@ -38,6 +38,9 @@
   const STATUS = { pending: '待处理', processing: '处理中', resolved: '已解决', closed: '已关闭' };
   const STATUS_TAG = { pending: 'tag-pending', processing: 'tag-processing', resolved: 'tag-resolved', closed: 'tag-closed' };
   const URGENCY_TAG = { 低: 'tag-u0', 中: 'tag-u1', 高: 'tag-u2', 紧急: 'tag-u3' };
+  // 超期状态 → 标签配色。用现成的 .tag-* 修饰类，不新增 CSS：
+  //   超期=红、超时完成/即将超期=琥珀、按时完成=绿、正常计时=默认灰
+  const SLA_TAG = { overdue: 'tag-over', done_late: 'tag-warn', warning: 'tag-warn', done: 'tag-done', ok: '', unknown: 'tag-draft' };
   const ROLE = { 1: '管理员', 2: '工程师', 3: '报障人' };
   const V = {};
 
@@ -58,6 +61,22 @@
     if (n < 1024) return n + ' B';
     if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
     return (n / 1024 / 1024).toFixed(1) + ' MB';
+  };
+  /* 时长（小时）→ 中文。SLA 里既有「已超 8.3 小时」也有「平均 4.2 天」，
+     统一一个格式器，避免各处自己 toFixed 出来「0.0 小时」这种读不出信息的结果 */
+  const fmtHours = (h) => {
+    if (h === null || h === undefined || h === '' || isNaN(h)) return '—';
+    const v = Number(h);
+    if (!isFinite(v)) return '—';
+    const a = Math.abs(v);
+    if (a < 1) return Math.round(a * 60) + ' 分钟';
+    if (a < 24) {
+      const n = Math.round(a * 10) / 10;
+      return (n % 1 === 0 ? n.toFixed(0) : n.toFixed(1)) + ' 小时';
+    }
+    const d = Math.floor(a / 24);
+    const rest = Math.round(a - d * 24);
+    return rest ? d + ' 天 ' + rest + ' 小时' : d + ' 天';
   };
 
   /* ---- 合同模块工具 ---- */
@@ -308,6 +327,41 @@
     <div>
       <div class="page-title">问题记录</div>
       <div class="page-sub">全部 HIS 系统问题工单 · 共 {{ total }} 条</div>
+
+      <!-- 时限总览：统计的是「全部工单」，不随上方筛选变化（筛选是看某一批，总览是看全局） -->
+      <div class="stat-strip" v-if="slaStat">
+        <div class="stat-cell">
+          <div class="k">超期未完成</div>
+          <div class="v bad">{{ slaStat.overdue }}</div>
+          <div class="s">最长已超 {{ fmtHours(slaStat.max_overdue_hours) }}</div>
+        </div>
+        <div class="stat-cell">
+          <div class="k">即将超期</div>
+          <div class="v warn">{{ slaStat.warning }}</div>
+          <div class="s">剩余不足时限 1/4</div>
+        </div>
+        <div class="stat-cell">
+          <div class="k">未完成合计</div>
+          <div class="v info">{{ slaStat.open }}</div>
+          <div class="s">共 {{ slaStat.total }} 条工单</div>
+        </div>
+        <div class="stat-cell">
+          <div class="k">按时完成率</div>
+          <div class="v ok">{{ slaStat.on_time_rate === null ? '—' : slaStat.on_time_rate + '%' }}</div>
+          <div class="s">超时完成 {{ slaStat.done_late }} 条</div>
+        </div>
+        <div class="stat-cell">
+          <div class="k">平均关闭周期</div>
+          <div class="v">{{ slaStat.avg_close_hours === null ? '—' : fmtHours(slaStat.avg_close_hours) }}</div>
+          <div class="s">从报障到关闭</div>
+        </div>
+      </div>
+      <div class="mini-note" v-if="slaStat">
+        时限口径：紧急 {{ slaStat.sla_table['紧急'] }}h · 高 {{ slaStat.sla_table['高'] }}h ·
+        中 {{ slaStat.sla_table['中'] }}h · 低 {{ slaStat.sla_table['低'] }}h；
+        起算取「报障时间」，已解决/已关闭不再计时。
+      </div>
+
       <div class="filter-bar">
         <input class="grow" v-model="f.kw" placeholder="搜索标题 / 单号 / 科室 / 报障人 / 内容" @keyup.enter="goPage(1)">
         <select v-model="f.status" @change="goPage(1)">
@@ -332,6 +386,9 @@
           <option v-for="m in months" :key="m" :value="m">{{ Number(m) }} 月</option>
         </select>
         <button class="btn btn-primary" @click="goPage(1)">查 询</button>
+        <label class="ck" style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--muted);white-space:nowrap">
+          <input type="checkbox" v-model="onlyOverdue" @change="goPage(1)">只看超期
+        </label>
         <button class="btn btn-outline" @click="exportExcel" :disabled="exporting">{{ exporting ? '导出中…' : '导出Excel' }}</button>
         <button class="btn btn-outline" @click="openImport">导入</button>
         <button v-if="canCreate" class="btn btn-outline" @click="newIssue">+ 新建问题</button>
@@ -360,7 +417,7 @@
               <tr>
                 <th class="c-chk"><input type="checkbox" :checked="allChecked" @change="toggleAll" title="全选本页"></th>
                 <th class="c-no">单号</th><th>标题</th><th class="c-cat">分类 / 模块</th>
-                <th class="c-urg">紧急程度</th><th class="c-st">状态</th>
+                <th class="c-urg">紧急程度</th><th class="c-st">状态</th><th class="c-sla">时限</th>
                 <th class="c-user">报障科室 / 人</th><th class="c-assign">处理人</th>
                 <th class="c-time">记录时间</th><th class="c-ops">操作</th>
               </tr>
@@ -373,6 +430,11 @@
                 <td><span class="cell-strong">{{ it.category }}</span><span class="cell-sub">{{ it.module || '-' }}</span></td>
                 <td><span :class="URGENCY_TAG[it.urgency]" class="tag">{{ it.urgency }}</span></td>
                 <td><span :class="STATUS_TAG[it.status]" class="tag">{{ it.status_text }}</span></td>
+                <!-- 时限：正常计时用灰字（不抢眼），超期/即将超期/超时完成才上颜色标签 -->
+                <td class="sla-cell">
+                  <span v-if="it.sla_state === 'ok'" class="sla-plain">{{ it.sla_text }}</span>
+                  <span v-else :class="SLA_TAG[it.sla_state]" class="tag">{{ it.sla_text }}</span>
+                </td>
                 <td><span class="cell-strong iss-dept">{{ it.department }}</span><span class="cell-sub">{{ it.reporter }}</span></td>
                 <td>{{ it.assignee_name || '-' }}</td>
                 <td class="mono">{{ fmt(it.report_time) }}</td>
@@ -380,7 +442,7 @@
                   <div class="row-actions"><button class="btn btn-ghost btn-sm" @click="open(it.id)">详情</button></div>
                 </td>
               </tr>
-              <tr v-if="!list.length"><td colspan="10" class="empty-row">暂无问题记录</td></tr>
+              <tr v-if="!list.length"><td colspan="11" class="empty-row">暂无问题记录</td></tr>
             </tbody>
           </table>
         </div>
@@ -435,12 +497,13 @@
     </div>`,
       data() {
       return {
-        STATUS, STATUS_TAG, URGENCY_TAG, URGENCY, mods: moduleStore,
+        STATUS, STATUS_TAG, URGENCY_TAG, URGENCY, SLA_TAG, mods: moduleStore,
         list: [], total: 0, page: 1, pageSize: 10,
         f: { status: '', urgency: '', category: '', module: '', kw: '', year: '', month: '' },
         years: [], months: ['01','02','03','04','05','06','07','08','09','10','11','12'],
         selectedIds: [], batchStatus: '', batchNote: '', batchSaving: false, batchResult: null,
         importOpen: false, importFile: null, importing: false, importResult: null, exporting: false,
+        slaStat: null, onlyOverdue: false,
       };
     },
     computed: {
@@ -466,10 +529,17 @@
           if (this.f.urgency) q.set('urgency', this.f.urgency);
           if (this.f.year) q.set('year', this.f.year);
           if (this.f.month) q.set('month', this.f.month);
+          if (this.onlyOverdue) q.set('overdue', '1');
           const d = await this.$api.get('/issues?' + q.toString());
           this.list = d.list; this.total = d.total;
         } catch (e) { this.$toast(e.message, 'err'); }
       },
+      // 超期总览：独立请求（不随筛选变化），失败就整块不显示，不影响列表
+      async loadSla() {
+        try { this.slaStat = await this.$api.get('/issues/stats/overdue'); }
+        catch (e) { this.slaStat = null; }
+      },
+      fmtHours: (h) => fmtHours(h),
       async loadYears() {
         try { this.years = await this.$api.get('/issues/meta/years'); } catch (e) {}
       },
@@ -564,11 +634,13 @@
           this.$toast(msg, r.okCount ? 'ok' : 'err');
           this.clearSel();
           this.load();
+          // 状态变了，超期/完成率会跟着变，总览必须一起刷，否则和列表自相矛盾
+          this.loadSla();
         } catch (e) { this.$toast(e.message, 'err'); } finally { this.batchSaving = false; }
       },
       fmt: (s) => fmtDate(s),
     },
-    mounted() { this.loadYears(); this.load(); },
+    mounted() { this.loadYears(); this.loadSla(); this.load(); },
   };
 
   /* ==================== 问题详情 ==================== */

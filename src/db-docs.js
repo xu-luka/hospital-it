@@ -66,6 +66,13 @@ function migrate() {
   addCol('documents', 'real_ext', "TEXT DEFAULT ''");
   // converted_name：旧版 .doc 转出的 docx 文件名（有则按完整排版预览）
   addCol('documents', 'converted_name', "TEXT DEFAULT ''");
+  // ---- 正文全文索引（2026-10-30） ----
+  // content_text：从 docx/pdf/doc 提取的纯文本，供 LIKE 检索（内网几百篇文档，够用且零依赖）
+  // content_status：ok / empty / unsupported / error，'' 表示还没尝试过
+  // indexed_at：最近一次索引时间，重建索引时用来判断是否需要重跑
+  addCol('documents', 'content_text', "TEXT DEFAULT ''");
+  addCol('documents', 'content_status', "TEXT DEFAULT ''");
+  addCol('documents', 'indexed_at', "TEXT DEFAULT ''");
 }
 
 // 首次运行注入医院信息科常用文档类型（用户可随时增删改）

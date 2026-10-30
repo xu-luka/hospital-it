@@ -10,6 +10,8 @@ const { getDb, fixFilename } = require('../db');
 const { db: contractDb } = require('../db-contract');
 const { authRequired, requirePerm, guardModule } = require('../auth');
 const { toSafeNum, toSafeText, logAction, genIssueNo } = require('../utils');
+// 超期（SLA）判定：规则与时间解析都在纯函数模块里，便于离线自测
+const sla = require('../issue-sla');
 
 const router = express.Router();
 router.use(authRequired);
@@ -141,6 +143,12 @@ router.get('/', (req, res) => {
     const kw = '%' + String(req.query.keyword).trim() + '%';
     params.push(kw, kw, kw, kw, kw);
   }
+  // 只看超期：下推到 SQL（否则先分页再过滤，会出现「本页 2 条、总数 137」的自相矛盾）
+  if (req.query.overdue === '1' || req.query.overdue === 'true') {
+    const od = sla.overdueSql();
+    where.push('(' + sla.OPEN_STATUS_SQL + ' AND ' + od.sql + ')');
+    params.push(...od.params);
+  }
   const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : '';
   const total = db.prepare(`SELECT COUNT(*) AS c FROM issues i ${whereSql}`).get(...params).c;
   const rows = db.prepare(`
@@ -151,7 +159,12 @@ router.get('/', (req, res) => {
     LIMIT ? OFFSET ?
   `).all(...params, pageSize, (page - 1) * pageSize);
 
-  res.json({ code: 0, data: { total, page, pageSize, list: rows.map(publicIssue) } });
+  // 列表行附带超期状态（同一批行用同一个 now，避免一页里跨秒导致边界不一致）
+  const now = Date.now();
+  res.json({
+    code: 0,
+    data: { total, page, pageSize, list: sla.attachSla(rows, now).map(publicIssue) }
+  });
 });
 
 // 有数据的年份清单（按年月筛选下拉用）；须注册在 /:id 之前
@@ -162,6 +175,30 @@ router.get('/meta/years', (req, res) => {
      WHERE report_time IS NOT NULL AND report_time != '' ORDER BY y DESC`
   ).all();
   res.json({ code: 0, data: rows.map((r) => r.y) });
+});
+
+/**
+ * 工单超期统计（须注册在 /:id 之前，否则会被当成 id="stats"）
+ *
+ * 口径见 src/issue-sla.js 顶部注释。这里只负责取数与组装：
+ *   全量取 status/urgency/时间/处理人几列，在 JS 里统一判定 —— 超期规则一旦
+ *   下放到 SQL，就再也没法用自测把边界（正好到期、已解决未关闭、缺时间）钉住。
+ * 数据量级：内网信息科一年几千条，全量内存计算完全可接受。
+ */
+router.get('/stats/overdue', (req, res) => {
+  const db = getDb();
+  try {
+    const rows = db.prepare(`
+      SELECT id, no, title, status, urgency, department, assignee_name,
+             report_time, created_at, closed_at
+      FROM issues
+    `).all();
+    const data = sla.summarize(rows);
+    res.json({ code: 0, data: data });
+  } catch (e) {
+    // 统计失败不该让整个页面打不开：返回空统计 + 原因，前端会提示但不白屏
+    res.json({ code: 0, message: '统计失败：' + ((e && e.message) || e), data: null });
+  }
 });
 
 // 批量状态流转（工程师/管理员）：逐条校验合法流转，不合法的跳过并回报
