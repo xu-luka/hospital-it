@@ -3371,19 +3371,50 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-base); }
 .row-link { cursor: pointer; }
 .row-link:hover td { background: var(--surface-2); }
 
-/* 表格列宽：九列在 1440 屏上会被压扁（「张医生」折成「张医/生」这种）。
+/* 表格列宽：七列在 1440 屏上也会被压扁（「门诊楼3层3诊室」折成两行）。
    按项目既有约定处理 —— 给表格设 min-width，超出的交给 .table-wrap 的横向滚动，
-   而不是让浏览器按比例压缩列宽。 */
-.term-table { min-width: 1000px; }
+   而不是让浏览器按比例压缩列宽。
+   ★ 2026-10-30 表结构照 Excel 重建后列变了（设备/统计类别/科室/内网/MAC/配置/报修/操作），
+     列宽要跟着重算 —— 少算一列的结果是最后一个按钮被裁掉半个。 */
+/* ★ table-layout 必须是 fixed：auto 布局会让列按内容撑开，列宽写多少都不算数，
+   1 千米长的一串「珠江街道 / 院本部 / 3F / 门诊楼3层3诊室」直接把表撑到 1193px，
+   超出 .table-wrap 的那几十像素正好把操作列最后一个「删除」裁在屏幕外 ——
+   而 ellipsis 也只有在 fixed 下才生效（.cell-sub 的 overflow:hidden 需要确定的列宽）。
+   列宽之和 = min-width，两处改一处忘一处就会出横向滚动条。 */
+.term-table { table-layout: fixed; min-width: 1142px; }
 .term-table td { white-space: nowrap; }
 .term-table .cell-strong,
 .term-table .cell-sub { display: block; overflow: hidden; text-overflow: ellipsis; }
-.term-table .c-dev { width: 236px; }
-.term-table .c-dept { width: 154px; }
-.term-table .c-warranty { width: 120px; }
+.term-table .c-dev { width: 216px; }
+.term-table .c-cat { width: 96px; }
+.term-table .c-dept { width: 186px; }
+.term-table .c-ip { width: 156px; }
+.term-table .c-spec { width: 168px; }
+.term-table .c-issue { width: 88px; }
+/* 未结工单数：跟「3 次」分两行放，挤成一行就会把列撑开（这列只有 88px） */
+.term-table .cell-sub.term-open { color: var(--bad); }
 /* 操作列按「最多四个 btn-sm」定宽：报修 / 详情 / 编辑 / 删除。
    再往里塞第五个就会被裁掉半个 —— 功能不可见等于没有，宁可另开一个入口。 */
-.term-table .c-ops { width: 214px; }
+.term-table .c-ops { width: 232px; }
+
+/* 「配置 / 耗材」列：主行放操作系统（或耗材型号），副行放 CPU/内存。
+   合成一行「Windows 10 专业版 · i5-9500」需要 197px，而这列只有 168px，
+   挤一行的结果是 CPU 永远显示成省略号 —— 而 CPU 才是比对机器好坏时真正看的那个。 */
+.term-table .spec-text { font-size: var(--fs-sm); }
+
+/* 表单顶部红条：认设备的必填项没填时出现。
+   为什么不用单纯 toast：字段多、弹窗能滚，用户在底部按保存时看不到顶部任何动静。 */
+.form-alert {
+  border: 1px solid var(--bad-line);
+  background: var(--bad-soft);
+  color: var(--bad);
+  border-radius: var(--r-sm);
+  padding: 10px 12px;
+  font-size: var(--fs-sm);
+  line-height: 1.7;
+  margin-bottom: 12px;
+}
+.form-alert b { font-weight: 600; }
 
 /* 必填项没填就地标红（第十二节）。
    为什么不用单纯 toast：名称在弹窗最上方，用户滚到最底部按保存，视线在右下角，

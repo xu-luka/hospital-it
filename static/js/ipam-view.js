@@ -208,8 +208,11 @@
                       {{ r.device.name }}
                     </span>
                   </td>
-                  <td><span class="cell-sub">{{ r.owner || '—' }}</span></td>
-                  <td><span class="cell-sub">{{ r.device_type || '—' }}</span></td>
+                  <!-- 终端行的「使用人」取自台账的科室（Excel 21 列里没有责任人这一项），
+                       比显示一个「—」有用得多 -->
+                  <td><span class="cell-sub">{{ r.owner || (r.device && r.device.department) || '—' }}</span></td>
+                  <!-- 类型优先显示台账的「统计类别」（台式计算机 / 黑白打印机），比大类的「PC」具体 -->
+                  <td><span class="cell-sub">{{ (r.device && r.device.stat_category) || r.device_type || '—' }}</span></td>
                   <td><span class="mono">{{ r.mac || '—' }}</span></td>
                   <td><span class="cell-sub">{{ r.note || '—' }}</span></td>
                   <td class="ops">
@@ -245,8 +248,8 @@
           </div>
           <div class="hint" v-if="ipTermTotal">
             标了「终端」的这些行来自【终端资产】台账，是<b>自动同步</b>过来的，不会写进本页的登记表 ——
-            设备改了 IP、报废或删除，这里立刻跟着变。也因此不需要再手工登记一遍（会被拒绝并提示是哪台设备）。
-            要让某个地址释放出来，请到终端资产把那台设备的 IP 清掉或状态改成「报废」。
+            设备改了 IP 或删除了，这里立刻跟着变。也因此不需要再手工登记一遍（会被拒绝并提示是哪台设备）。
+            要让某个地址释放出来，请到终端资产把那台设备的「内网地址」清掉，或者直接删掉那台设备。
           </div>
           <div class="hint" v-if="mergeNote">{{ mergeNote }}</div>
         </div>

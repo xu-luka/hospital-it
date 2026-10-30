@@ -248,15 +248,16 @@ function usedSetOf(segmentId) {
  *   · terminals 是唯一事实来源，本模块**不往 ip_records 写任何东西**；
  *   · 只在「列登记 / 算空闲 / 画分布图」时把终端 IP 当成已被占用，并带上设备名、
  *     科室、位置，让人一眼看出这个地址是谁在用；
- *   · 于是终端改 IP、删设备、改成报废，IP 管理这边立刻跟着变，永远不会漂移。
+ *   · 于是终端改 IP、删设备，IP 管理这边立刻跟着变，永远不会漂移。
  *
  * 为什么不用写时同步（保存终端时往 ip_records 插一条）：
  *   ① 终端常常在还没建网段时就有 IP，那时根本没地方插；
  *   ② ip_records 有 (segment_id, ip) 唯一索引，写冲突会把「保存设备」这种正常操作变成报错；
  *   ③ 双写必然漂移，而漂移在这里的代价是「空闲地址里推荐一个其实已被占的 IP」。
  *
- * 「报废」设备的地址**不算**占用：机器已废弃，地址多半早被回收，
- * 算成占用会让空闲地址凭空少一批。它们仍会列出来，只是标「已报废、地址已释放」。
+ * ★ 2026-10-30 表结构重建后，台账里**没有「状态/报废」这一项**了（Excel 没有这列），
+ *   所以这里不再区分「是否已释放」：设备在台账里 = 地址被占着；
+ *   机器不用了就从台账删掉，地址自然回到空闲。
  */
 
 /** 读终端资产里「有 IP」的记录。任何异常都降级成空数组 —— IP 管理不能因此不可用。 */
@@ -272,11 +273,10 @@ function terminalIps() {
   }
 }
 
-/** 落在某网段内、且算作「被占用」的终端地址（报废的不算） */
+/** 落在某网段内、算作「被占用」的终端地址 */
 function terminalIn(cidr) {
   const out = [];
   terminalIps().forEach((t) => {
-    if (t.released) return;
     if (!ipInCidr(t.ip, cidr)) return;
     out.push(t);
   });
@@ -287,7 +287,7 @@ function terminalIn(cidr) {
 function terminalAt(ip, exceptIp) {
   const v = String(ip == null ? '' : ip).trim();
   if (!v) return null;
-  const hits = terminalIps().filter((t) => !t.released && t.ip === v && t.ip !== exceptIp);
+  const hits = terminalIps().filter((t) => t.ip === v && t.ip !== exceptIp);
   return hits.length ? { first: hits[0], count: hits.length, all: hits } : null;
 }
 
@@ -314,19 +314,20 @@ function shapeTerminalRecord(t, seg) {
     segment_cidr: seg ? seg.cidr : '',
     ip: t.ip,
     ip_num: parseIp(t.ip) === null ? 0 : parseIp(t.ip),
-    status: t.released ? 'free' : 'used',
-    status_label: t.released ? '已释放' : '已使用',
+    status: 'used',
+    status_label: '已使用',
     hostname: t.hostname || t.name,
     mac: t.mac || '',
-    owner: t.owner || '',
+    // 台账 21 列里没有「责任人」，留空字段保证前端不用改判断分支
+    owner: '',
     device_type: t.kind || '',
     note: '终端资产 · ' + [t.department, t.location].filter(Boolean).join(' / '),
     created_at: '',
     updated_at: '',
-    released: !!t.released,
     device: {
-      id: t.terminal_id, name: t.name, kind: t.kind, status: t.status,
-      department: t.department, location: t.location, owner: t.owner, hostname: t.hostname,
+      id: t.terminal_id, name: t.name, kind: t.kind,
+      department: t.department, location: t.location, hostname: t.hostname,
+      stat_category: t.stat_category || '', model: t.model || '',
     },
   };
 }
@@ -492,7 +493,7 @@ function segmentStats() {
        terminal_only = 其中「本网段还没手工登记过」的，空闲地址要扣的正是这部分
      注意手动登记优先：同一个 IP 两边都有时只算一次，否则 free_count 会被扣两遍。 */
   try {
-    const terms = terminalIps().filter((t) => !t.released);
+    const terms = terminalIps();
     if (terms.length) {
       const manual = {};
       db.prepare('SELECT segment_id, ip FROM ip_records').all().forEach((r) => {
@@ -629,8 +630,8 @@ function removeSegment(id) {
 function terminalMatch(t, kw) {
   if (!kw) return true;
   const k = kw.toLowerCase();
-  return [t.ip, t.name, t.hostname, t.owner, t.mac, t.kind, t.department, t.location,
-    t.ip_extra].join(' ').toLowerCase().indexOf(k) >= 0;
+  return [t.ip, t.name, t.hostname, t.mac, t.kind, t.stat_category, t.model,
+    t.department, t.location, t.ip_extra, t.asset_no].join(' ').toLowerCase().indexOf(k) >= 0;
 }
 
 // 合并模式下「取全量再切片」的上限。超过这个量说明手工登记本身已经过万，
@@ -702,10 +703,7 @@ function listIps(opts) {
         const s = segmentOfIp(t.ip, segs);
         if (!s || Number(s.id) !== segId) return false;
       }
-      if (status) {
-        const st = t.released ? 'free' : 'used';
-        if (st !== status) return false;
-      }
+      if (status && status !== 'used') return false;   // 终端记录一律是「已使用」
       return true;
     })
     .map((t) => shapeTerminalRecord(t, segmentOfIp(t.ip, segs)));

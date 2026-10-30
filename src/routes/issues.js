@@ -112,8 +112,10 @@ function publicIssue(r) {
   const o = Object.assign({}, r, { status_text: config.STATUS[r.status] || r.status });
   if (o.category == null) o.category = '日常软件'; // 老数据兼容，正常已在启动时回填
   if (o.module == null) o.module = '';
-  // 关联终端设备：列表 SQL 会带 t.name / t.asset_no / t.location 三个别名，
+  // 关联终端设备：列表 SQL 会带 t.hostname（拼成 device_name）/ asset_no / location 三个别名，
   // 详情接口不带（走 terminals.brief 补完整对象），所以这里要能容忍别名缺失。
+  // ★ 终端台账 2026-10-30 按 Excel 21 列重建后没有「设备名称」这一列了，
+  //   名字由 hostname → 统计类别+型号 → 「设备 #id」派生（与 terminals.displayName 同一套规则）。
   o.device = o.device_id ? {
     id: o.device_id,
     name: o.device_name || '',
@@ -173,7 +175,16 @@ router.get('/', (req, res) => {
   const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : '';
   const total = db.prepare(`SELECT COUNT(*) AS c FROM issues i ${whereSql}`).get(...params).c;
   const rows = db.prepare(`
-    SELECT i.*, t.name AS device_name, t.asset_no AS device_asset_no, t.location AS device_location
+    SELECT i.*,
+      CASE
+        WHEN t.id IS NULL THEN ''
+        WHEN TRIM(t.hostname) <> '' THEN t.hostname
+        WHEN TRIM(COALESCE(t.stat_category, '') || COALESCE(t.model, '')) <> ''
+          THEN TRIM(COALESCE(t.stat_category, '') || ' ' || COALESCE(t.model, ''))
+        ELSE '设备 #' || t.id
+      END AS device_name,
+      t.asset_no AS device_asset_no,
+      t.location AS device_location
     FROM issues i
     LEFT JOIN terminals t ON t.id = i.device_id
     ${whereSql}

@@ -8,8 +8,14 @@
  * 做法与 bookmark-ipam-api-e2e 一致：四个库全部指到临时目录（改 config 再 require db 模块），
  * 不碰 data/*.db；起真实 Express 服务，自签 JWT 打真实 HTTP。
  *
- * 重点覆盖「错了也不报错」的地方：
- *   · 保修状态的四个边界（未登记 / 已过保 / 今天到期 / 刚好 30 天 / 31 天）
+ * ★ 2026-10-30 第二轮：表结构按 Excel 21 列重建，所以这份自测的重点也跟着变了：
+ *   · 表里**只有** 21 个台账列 + 记账列，旧的「名称/类型/状态/责任人/保修」一个都不能留
+ *     （不然就说明重建没生效，或者又被谁加回去了）；
+ *   · 「设备名称」「设备类型」是**派生**的（displayName / kindOf），要从台账字段算得对；
+ *   · 没有「报废」了 —— 设备下拉不再排除任何设备，IP 管理也不再区分是否已释放；
+ *   · 认设备靠 keyOf：只填一个内网地址是认不出来的，必须给出 400 而不是悄悄入库一条无名记录。
+ *
+ * 另外覆盖「错了也不报错」的地方：
  *   · 删除设备后工单必须还在（只解绑，不级联删）
  *   · 工单选了设备但没填科室时必须自动带出科室
  *   · 编辑设备只提交部分字段时，别的字段不能被清空
@@ -42,13 +48,13 @@ function eq(tag, a, b) {
   else { fails.push(tag + ' 期望 ' + y + '，实际 ' + x); console.log('  [FAIL] ' + tag + ' 期望 ' + y + '，实际 ' + x); }
 }
 
-/** 相对今天偏移 n 天的日期字符串（本地时区，和页面上 date 输入框一致） */
-function d(offset) {
-  const t = new Date();
-  t.setDate(t.getDate() + offset);
-  const p = (n) => (n < 10 ? '0' : '') + n;
-  return t.getFullYear() + '-' + p(t.getMonth() + 1) + '-' + p(t.getDate());
-}
+/** Excel 的 21 列（顺序即导出顺序） */
+const EXCEL_HEADS = ['院区', '资产编码', '区域', '楼层', '科室', '位置', '统计类别', '设备性质',
+  '工作组/计算机名', '内网地址', '外网地址', 'MAC', 'SN码', '生产日期', '型号',
+  '操作系统', 'CPU', '硬盘', '内存', '显示器尺寸', '耗材型号'];
+
+/** 上一版自造的 9 列，重建后一个都不该在表里 */
+const LEGACY_HEADS = ['设备名称', '类型', '责任人', '状态', '保修至', '采购日期', '品牌', '供应商', '备注'];
 
 (async () => {
   const { signJwt, getSecret } = require(path.join(ROOT, 'src', 'auth'));
@@ -88,94 +94,133 @@ function d(offset) {
     return { status: res.status, json, raw: JSON.stringify(json) };
   }
 
-  console.log('\n== 表结构与权限边界 ==');
+  console.log('\n== 表结构：严格 21 列 ==');
   // terminals 是懒建表：getDb() 在 init 之前会抛错，所以模块加载时不建表，
   // 第一次有权限的请求才建。这里先打一次，否则 PRAGMA 查出来是 0 列（表还不存在）。
   const warm = await call('admin', 'GET', '/api/terminals');
   eq('管理员读台账 → 200（同时触发懒建表）', warm.status, 200);
   const hisDb = getDb();
   const cols = hisDb.prepare('PRAGMA table_info(terminals)').all().map((c) => c.name);
-  ok('terminals 表已建（懒建表生效）', cols.length > 10, cols.length + ' 列');
+  const CORE = {
+    campus: 'campus', asset_no: 'asset_no', area: 'area', floor: 'floor',
+    department: 'department', location: 'location', stat_category: 'stat_category',
+    nature: 'nature', hostname: 'hostname', ip: 'ip', ip_extra: 'ip_extra',
+    mac: 'mac', sn: 'sn', produce_date: 'produce_date', model: 'model', os: 'os',
+    cpu: 'cpu', disk: 'disk', ram: 'ram', monitor: 'monitor', consumable: 'consumable',
+  };
+  ok('★ 21 个台账列全部在表里', Object.keys(CORE).every((k) => cols.indexOf(k) >= 0),
+    Object.keys(CORE).filter((k) => cols.indexOf(k) < 0).join(',') || '全在');
+  const leaked = LEGACY_HEADS.filter((h) => cols.indexOf(h) >= 0);
+  ok('★ 表里没有上一版自造的 9 列', leaked.length === 0, leaked.join(',') || '一个都没有');
+  eq('总列数 = id + 21 + 7 个记账列', cols.length, 1 + 21 + 7);
   ok('★ issues 表已有 device_id 列（老库补列）',
     hisDb.prepare('PRAGMA table_info(issues)').all().some((c) => c.name === 'device_id'));
   eq('未登录读台账 → 401', (await call(null, 'GET', '/api/terminals')).status, 401);
   eq('只读角色读台账 → 200', (await call('viewer', 'GET', '/api/terminals')).status, 200);
   eq('只读角色新增设备 → 403（只有 view 没有 manage）',
-    (await call('viewer', 'POST', '/api/terminals', { name: 'x' })).status, 403);
+    (await call('viewer', 'POST', '/api/terminals', { hostname: 'x' })).status, 403);
 
-  console.log('\n== 新增：必填校验与保修日期归一 ==');
-  eq('空名称 → 400', (await call('admin', 'POST', '/api/terminals', { name: '   ' })).status, 400);
+  console.log('\n== 新增：认设备的键（keyOf）==');
+  eq('全空 → 400', (await call('admin', 'POST', '/api/terminals', {})).status, 400);
+  const onlyIp = await call('admin', 'POST', '/api/terminals', { ip: '10.20.30.41' });
+  eq('★ 只填内网地址 → 400（换机会沿用旧 IP，不能当标识）', onlyIp.status, 400);
+  ok('400 的文案说清了要填什么', /识别|认不出|至少/.test(String(onlyIp.json.message)), onlyIp.json.message);
+  eq('只填科室 → 400（单字段不构成复合键）',
+    (await call('admin', 'POST', '/api/terminals', { department: '门诊部' })).status, 400);
+  eq('科室 + 位置 → 200（复合键成立）',
+    (await call('admin', 'POST', '/api/terminals', { department: '财务科', location: '医生办（一）', stat_category: '台式计算机' })).status, 200);
+
   const c1 = await call('admin', 'POST', '/api/terminals', {
-    asset_no: 'ZC-2024-0001', name: '门诊3号诊室工作站', kind: 'PC',
-    brand: '联想', model: 'M720t', sn: 'SN12345678', mac: 'AA-BB-CC-11-22-33',
-    ip: '10.20.30.41', department: '门诊部', location: '门诊楼3层3诊室',
-    owner: '张医生', status: '在用',
-    purchase_date: '2024-03-15', warranty_end: d(365), vendor: '某电脑公司',
+    campus: '珠江街道', asset_no: 'ZC-2024-0001', area: '门诊楼', floor: '三楼',
+    department: '门诊部', location: '门诊楼3层3诊室', stat_category: '台式计算机',
+    nature: '政府采购设备', hostname: 'MZ-PC-0301',
+    ip: '10.20.30.41', ip_extra: '10.10.10.248', mac: 'AA-BB-CC-11-22-33',
+    sn: 'SN12345678', produce_date: '2018-06-02', model: '启天M410-N000',
+    os: 'Windows 10', cpu: 'Intel Core i5-7500', disk: '256G+1T', ram: 'DDR4 - 8G',
+    monitor: "Lenovo-LCD 20'", consumable: '',
   });
-  eq('新增设备 → 200', c1.status, 200);
-  const t1 = c1.json && c1.json.data && c1.json.data.id;
+  eq('完整计算机 → 200', c1.status, 200);
+  const t1 = c1.json.data.id;
   ok('返回了 id', Number(t1) > 0, t1);
+  eq('★ 保存后返回派生名称（= 工作组/计算机名）', c1.json.data.name, 'MZ-PC-0301');
 
+  // 打印机：没有计算机名，靠「统计类别 + 型号」当显示名
   const c2 = await call('admin', 'POST', '/api/terminals', {
-    name: '内科打印机', kind: '打印机', department: '内科',
-    location: '住院楼5层护士站', warranty_end: d(-1),
+    department: '内科', location: '住院楼5层护士站', stat_category: '黑白打印机',
+    nature: '租赁设备', model: 'Epson M101', sn: 'B6S01A', ip: '10.20.30.50',
+    consumable: 'T7741', mac: '04-0E-3C-E2-A6-14',
   });
   const t2 = c2.json.data.id;
+  eq('★ 打印机没有计算机名 → 名称 = 统计类别 + 型号', c2.json.data.name, '黑白打印机 Epson M101');
   const c3 = await call('admin', 'POST', '/api/terminals', {
-    name: '自助挂号机1号', kind: '自助机', department: '门诊部',
-    location: '门诊大厅', warranty_end: d(0),
+    department: '门诊部', location: '门诊大厅', stat_category: '自助机', mac: 'AA-BB-CC-11-22-34',
   });
   const t3 = c3.json.data.id;
   const c4 = await call('admin', 'POST', '/api/terminals', {
-    name: '叫号屏2号', kind: '叫号机', department: '门诊部',
-    location: '二楼候诊区', warranty_end: d(30),
+    department: '门诊部', location: '二楼候诊区', stat_category: '叫号机', mac: 'AA-BB-CC-11-22-35',
   });
   const t4 = c4.json.data.id;
-  const c5 = await call('admin', 'POST', '/api/terminals', {
-    name: '报废旧显示器', kind: '显示屏', department: '信息科',
-    status: '报废', location: '库房',
-  });
+  // 只写 MAC 也能建（MAC 本身就是键）
+  const c5 = await call('admin', 'POST', '/api/terminals', { mac: 'AA-BB-CC-11-22-36' });
   const t5 = c5.json.data.id;
   ok('五台设备全部新增成功', [t1, t2, t3, t4, t5].every((x) => Number(x) > 0));
 
-  console.log('\n== 保修状态：四个边界 ==');
+  console.log('\n== 派生字段：名称与类型都从台账列算 ==');
   const g1 = await call('admin', 'GET', '/api/terminals/' + t1);
-  eq('还早得很（+365 天）→ ok', g1.json.data.warranty_state, 'ok');
-  const g2 = await call('admin', 'GET', '/api/terminals/' + t2);
-  eq('昨天到期 → expired', g2.json.data.warranty_state, 'expired');
-  eq('已过保天数 = 1', g2.json.data.warranty_days, -1);
-  const g3 = await call('admin', 'GET', '/api/terminals/' + t3);
-  eq('★ 今天到期 → soon（不是 expired，过保当天还能走保修流程）', g3.json.data.warranty_state, 'soon');
-  eq('今天到期的提示文案', g3.json.data.warranty_text, '今天到期');
-  const g4 = await call('admin', 'GET', '/api/terminals/' + t4);
-  eq('★ 刚好第 30 天 → soon（边界含）', g4.json.data.warranty_state, 'soon');
+  eq('名称 = 工作组/计算机名', g1.json.data.name, 'MZ-PC-0301');
+  eq('类型由统计类别推导（台式计算机 → PC）', g1.json.data.kind, 'PC');
+  eq('21 列全部原样返回', g1.json.data.cpu, 'Intel Core i5-7500');
+  ok('★ 出参里没有 status / warranty_end 之类已删字段',
+    g1.json.data.status === undefined && g1.json.data.warranty_end === undefined
+    && g1.json.data.owner === undefined && g1.json.data.note === undefined);
+  eq('采购日期 / 保修至 也不再返回', g1.json.data.purchase_date, undefined);
+
   const g5 = await call('admin', 'GET', '/api/terminals/' + t5);
-  eq('没填保修期 → none', g5.json.data.warranty_state, 'none');
+  eq('★ 只有 MAC、别的全空时，名称退化成「设备 #id」', g5.json.data.name, '设备 #' + t5);
+  eq('统计类别空 → 类型落到「其他」', g5.json.data.kind, '其他');
 
   console.log('\n== 列表：统计、筛选、排序 ==');
   const l1 = await call('admin', 'GET', '/api/terminals');
-  eq('列表总数 5', l1.json.data.total, 5);
-  eq('统计 total', l1.json.data.stats.total, 5);
-  eq('统计 expired', l1.json.data.stats.expired, 1);
-  eq('统计 soon', l1.json.data.stats.soon, 2);
-  eq('统计 no_warranty', l1.json.data.stats.no_warranty, 1);
-  eq('统计 repairing（没有维修中的）', l1.json.data.stats.repairing, 0);
-  eq('科室清单数量（门诊部/内科/信息科）', l1.json.data.departments.length, 3);
-  ok('类型清单里有 PC（5 种全给了）', l1.json.data.kinds.length >= 1);
+  eq('列表总数 6（含前面「科室+位置」那台）', l1.json.data.total, 6);
+  eq('统计 total', l1.json.data.stats.total, 6);
+  eq('统计 已登记内网地址 = 2', l1.json.data.stats.with_ip, 2);
+  eq('统计 缺资产编码 = 5', l1.json.data.stats.no_asset, 5);
+  eq('统计 覆盖科室 = 3（门诊部/内科/财务科）', l1.json.data.stats.depts, 3);
+  ok('★ stats 里不再有 expired / soon / no_warranty / scrapped 这些旧口径',
+    l1.json.data.stats.expired === undefined && l1.json.data.stats.soon === undefined
+    && l1.json.data.stats.scrapped === undefined && l1.json.data.stats.no_warranty === undefined);
+  eq('科室清单数量', l1.json.data.departments.length, 3);
+  ok('统计类别清单跟着台账走',
+    (l1.json.data.stat_categories || []).map((x) => x.name).indexOf('黑白打印机') >= 0);
 
-  eq('按科室筛内科 → 1 台', (await call('admin', 'GET', '/api/terminals?department=' + encodeURIComponent('内科'))).json.data.total, 1);
-  eq('按类型筛打印机 → 1 台', (await call('admin', 'GET', '/api/terminals?kind=' + encodeURIComponent('打印机'))).json.data.total, 1);
-  eq('按保修筛 expired → 1 台', (await call('admin', 'GET', '/api/terminals?warranty=expired')).json.data.total, 1);
-  eq('按保修筛 soon → 2 台', (await call('admin', 'GET', '/api/terminals?warranty=soon')).json.data.total, 2);
-  eq('按保修筛 none → 1 台', (await call('admin', 'GET', '/api/terminals?warranty=none')).json.data.total, 1);
-  eq('关键词搜 IP 片段 10.20.30.41 → 1 台', (await call('admin', 'GET', '/api/terminals?keyword=10.20.30.41')).json.data.total, 1);
-  eq('关键词搜资产号 ZC-2024 → 1 台', (await call('admin', 'GET', '/api/terminals?keyword=ZC-2024')).json.data.total, 1);
-  eq('关键词搜责任人「张医生」→ 1 台', (await call('admin', 'GET', '/api/terminals?keyword=' + encodeURIComponent('张医生'))).json.data.total, 1);
+  eq('按科室筛内科 → 1 台',
+    (await call('admin', 'GET', '/api/terminals?department=' + encodeURIComponent('内科'))).json.data.total, 1);
+  eq('★ 按统计类别筛台式计算机 → 2 台（手工那台 + 复合键那台）',
+    (await call('admin', 'GET', '/api/terminals?stat_category=' + encodeURIComponent('台式计算机'))).json.data.total, 2);
+  eq('按设备性质筛租赁设备 → 1 台',
+    (await call('admin', 'GET', '/api/terminals?nature=' + encodeURIComponent('租赁设备'))).json.data.total, 1);
+  eq('关键词搜 IP 片段 10.20.30.41 → 1 台',
+    (await call('admin', 'GET', '/api/terminals?keyword=10.20.30.41')).json.data.total, 1);
+  eq('关键词搜资产号 ZC-2024 → 1 台',
+    (await call('admin', 'GET', '/api/terminals?keyword=ZC-2024')).json.data.total, 1);
+  eq('关键词搜 MAC 片段 11-22-34 → 1 台',
+    (await call('admin', 'GET', '/api/terminals?keyword=11-22-34')).json.data.total, 1);
+  eq('关键词搜型号 M101 → 1 台',
+    (await call('admin', 'GET', '/api/terminals?keyword=M101')).json.data.total, 1);
+  eq('★ 关键词搜任意列（显示器尺寸 Lenovo-LCD）→ 1 台',
+    (await call('admin', 'GET', '/api/terminals?keyword=' + encodeURIComponent('Lenovo-LCD'))).json.data.total, 1);
   eq('关键词搜不存在的 → 0 台', (await call('admin', 'GET', '/api/terminals?keyword=zzzz')).json.data.total, 0);
 
   const l2 = await call('admin', 'GET', '/api/terminals?page=1&pageSize=2');
   eq('分页 pageSize=2 → 返回 2 条', l2.json.data.list.length, 2);
-  eq('分页 total 仍是 5', l2.json.data.total, 5);
+  eq('分页 total 仍是 6', l2.json.data.total, 6);
+  const sortAsset = await call('admin', 'GET', '/api/terminals?sort=asset');
+  eq('sort=asset：有资产编码的排在前面', sortAsset.json.data.list[0].asset_no, 'ZC-2024-0001');
+
+  console.log('\n== 设备下拉（工单用）==');
+  const opts = await call('admin', 'GET', '/api/terminals/options');
+  eq('★ 下拉给出全部 6 台（台账没有「报废」，不再排除任何设备）', opts.json.data.list.length, 6);
+  ok('下拉项带派生名称', opts.json.data.list.every((x) => !!x.name));
 
   console.log('\n== 工单挂设备 ==');
   const i1 = await call('admin', 'POST', '/api/issues', {
@@ -187,7 +232,7 @@ function d(offset) {
   const issue1 = i1.json.data.id;
   const d1 = await call('admin', 'GET', '/api/issues/' + issue1);
   eq('★ 工单自动带出了设备所属科室', d1.json.data.issue.department, '内科');
-  ok('工单详情带完整设备对象', d1.json.data.issue.device && d1.json.data.issue.device.name === '内科打印机',
+  ok('工单详情带完整设备对象', d1.json.data.issue.device && d1.json.data.issue.device.name === '黑白打印机 Epson M101',
     JSON.stringify(d1.json.data.issue.device));
   eq('设备对象带资产号字段（没有则为空串，不是 undefined）', d1.json.data.issue.device.asset_no, '');
 
@@ -196,7 +241,7 @@ function d(offset) {
     urgency: '中', content: '按电源无反应', deviceId: t1, department: '门诊部',
   });
   const issue2 = i2.json.data.id;
-  const i3 = await call('admin', 'POST', '/api/issues', {
+  await call('admin', 'POST', '/api/issues', {
     title: '自助机黑屏', category: '日常硬件', module: '其他',
     urgency: '紧急', content: '大厅自助机黑屏', deviceId: t3,
   });
@@ -209,7 +254,7 @@ function d(offset) {
 
   const listWithDevice = await call('admin', 'GET', '/api/issues?keyword=' + encodeURIComponent('打印机卡纸'));
   const row = listWithDevice.json.data.list[0];
-  ok('★ 工单列表行带设备名（LEFT JOIN 别名）', row.device && row.device.name === '内科打印机',
+  ok('★ 工单列表行带设备名（LEFT JOIN 别名）', row.device && row.device.name === '黑白打印机 Epson M101',
     JSON.stringify(row.device));
   ok('列表行不透出 device_name 原始别名', !('device_name' in row));
 
@@ -222,27 +267,32 @@ function d(offset) {
 
   console.log('\n== 编辑：局部更新不能清空别的字段 ==');
   const before = (await call('admin', 'GET', '/api/terminals/' + t1)).json.data;
-  const u1 = await call('admin', 'PUT', '/api/terminals/' + t1, { owner: '李医生' });
-  eq('只提交 owner → 200', u1.status, 200);
+  const u1 = await call('admin', 'PUT', '/api/terminals/' + t1, { location: '门诊楼3层4诊室' });
+  eq('只提交 location → 200', u1.status, 200);
   const after = (await call('admin', 'GET', '/api/terminals/' + t1)).json.data;
-  eq('owner 已更新', after.owner, '李医生');
+  eq('location 已更新', after.location, '门诊楼3层4诊室');
   eq('★ 未提交的 department 没被清空', after.department, before.department);
-  eq('★ 未提交的 warranty_end 没被清空', after.warranty_end, before.warranty_end);
+  eq('★ 未提交的 cpu 没被清空', after.cpu, before.cpu);
   eq('★ 未提交的 asset_no 没被清空', after.asset_no, before.asset_no);
-  eq('★ 未提交的 note 没被清空', after.note, before.note);
+  eq('★ 未提交的 monitor 没被清空', after.monitor, before.monitor);
+  ok('★ 局部更新没有把整条记录洗成空', !!after.hostname && !!after.stat_category);
 
-  eq('把设备改成报废 → 200',
-    (await call('admin', 'PUT', '/api/terminals/' + t5, { status: '报废' })).status, 200);
-  const opts = await call('admin', 'GET', '/api/terminals/options');
-  ok('★ 设备下拉不包含报废设备', opts.json.data.list.every((x) => x.status !== '报废'),
-    opts.json.data.list.map((x) => x.name).join(','));
-  eq('设备下拉共 4 台（5 台减掉报废那台）', opts.json.data.list.length, 4);
+  eq('把 MAC 清掉、但有资产编码 → 仍可保存',
+    (await call('admin', 'PUT', '/api/terminals/' + t1, { mac: '' })).status, 200);
+  // 键字段和复合键字段全清空 → 这条记录就再也认不出来了，必须拒绝而不是入库
+  const wipe = await call('admin', 'PUT', '/api/terminals/' + t1, {
+    asset_no: '', hostname: '', mac: '', sn: '',
+    department: '', location: '', stat_category: '', model: '',
+  });
+  eq('★ 把能认出设备的所有字段清空 → 400', wipe.status, 400);
+  const stillOk = (await call('admin', 'GET', '/api/terminals/' + t1)).json.data;
+  ok('★ 被拒绝的保存没有把原记录改坏', stillOk.hostname === 'MZ-PC-0301' && stillOk.department === '门诊部');
 
   console.log('\n== 工单换设备 / 解绑 ==');
   const u2 = await call('admin', 'PUT', '/api/issues/' + issue2, { deviceId: t3 });
   eq('把工单改挂到另一台设备 → 200', u2.status, 200);
   const d2 = await call('admin', 'GET', '/api/issues/' + issue2);
-  eq('工单设备已变更', d2.json.data.issue.device.name, '自助挂号机1号');
+  eq('工单设备已变更', d2.json.data.issue.device.id, t3);
   eq('新设备历史工单变成 2 条', (await call('admin', 'GET', '/api/terminals/' + t3)).json.data.issue_count, 2);
 
   const u3 = await call('admin', 'PUT', '/api/issues/' + issue2, { deviceId: 0 });
@@ -283,11 +333,9 @@ function d(offset) {
   }
 
   // 造一份结构与院里那份台账一致的样例：两个 sheet 列数不同，外加一个「填写说明」表
-  const PC_HEADER = ['院区', '资产编码', '区域', '楼层', '科室', '位置', '统计类别', '设备性质',
-    '工作组/计算机名', '内网地址', '外网地址', 'MAC', 'SN码', '生产日期', '型号',
-    '操作系统', 'CPU', '硬盘', '内存', '显示器尺寸'];
+  const PC_HEADER = EXCEL_HEADS.slice(0, 20);                       // 计算机 20 列
   const PRT_HEADER = ['院区', '资产编码', '区域', '楼层', '科室', '位置', '统计类别', '设备性质',
-    '内网地址', '外网地址', 'MAC', 'SN码', '生产日期', '型号', '耗材型号'];
+    '内网地址', '外网地址', 'MAC', 'SN码', '生产日期', '型号', '耗材型号'];   // 打印机 15 列
 
   const pcRows = [
     PC_HEADER,
@@ -304,17 +352,16 @@ function d(offset) {
       '200.100.60.37', '-', '04-0E-3C-E2-A6-14', 'B6S01A', '2023-07-10', 'Epson M101', 'T7741'],
     ['珠江街道', '-', '住院楼', '三楼', '住院儿科', '护士站（二）', '二维码扫描枪', '设备自带',
       '-', '-', 'F8:D0:27:20:56:0C', '-', '-', '科密 YX-18+', '-'],
+    // ★ 统计类别空着的打印机：类型必须按 sheet 名认成「打印机」，不能默认成 PC
+    ['珠江街道', '-', '住院楼', '四楼', '住院儿科', '护士站（三）', '', '',
+      '200.100.60.38', '-', 'F8:D0:27:20:56:0D', '-', '-', 'HP P1108', '-'],
   ];
 
   function buildBook() {
     const wb = XLSX.utils.book_new();
-    const mk = (rows) => {
-      const ws = XLSX.utils.aoa_to_sheet(rows);
-      return ws;
-    };
-    XLSX.utils.book_append_sheet(wb, mk(pcRows), '计算机');
-    XLSX.utils.book_append_sheet(wb, mk(prtRows), '打印机');
-    XLSX.utils.book_append_sheet(wb, mk([['填写说明'], ['这是说明表，没有台账字段，应被跳过']]), '填写说明');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(pcRows), '计算机');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(prtRows), '打印机');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['填写说明'], ['这是说明表，没有台账字段，应被跳过']]), '填写说明');
     return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
   }
 
@@ -322,43 +369,52 @@ function d(offset) {
 
   const dry = await upload('admin', '/api/terminals/import?dryRun=1', buildBook());
   eq('预导入（dryRun）→ 200', dry.status, 200);
-  eq('预导入识别出 4 条', dry.json.data.total, 4);
-  eq('预导入报告新增 4 条', dry.json.data.created, 4);
+  eq('预导入识别出 5 条', dry.json.data.total, 5);
+  eq('预导入报告新增 5 条', dry.json.data.created, 5);
   eq('★ dryRun 不落库：总数没变', (await call('admin', 'GET', '/api/terminals')).json.data.stats.total, beforeTotal);
   eq('★ 没被认出的「填写说明」表被跳过', (dry.json.data.sheets_scanned || []).filter((s) => s.skipped).length, 1);
 
   const imp = await upload('admin', '/api/terminals/import', buildBook());
   eq('正式导入 → 200', imp.status, 200);
-  eq('新增 4 条', imp.json.data.created, 4);
-  eq('总数 +4', (await call('admin', 'GET', '/api/terminals')).json.data.stats.total, beforeTotal + 4);
+  eq('新增 5 条', imp.json.data.created, 5);
+  eq('总数 +5', (await call('admin', 'GET', '/api/terminals')).json.data.stats.total, beforeTotal + 5);
 
   const fin = (await call('admin', 'GET', '/api/terminals?keyword=' + encodeURIComponent('PC-20180817RHBE'))).json.data.list[0];
-  eq('★ 计算机行：统计类别原样保留', fin.stat_category, '台式计算机');
+  eq('★ 统计类别原样保留', fin.stat_category, '台式计算机');
   eq('★ 类型由统计类别推导（台式计算机 → PC）', fin.kind, 'PC');
   eq('院区 / 区域 / 楼层都落库', [fin.campus, fin.area, fin.floor].join('|'), '珠江街道|门诊楼|三楼');
   eq('工作组/计算机名落库', fin.hostname, 'PC-20180817RHBE');
+  eq('★ 名称直接取计算机名（不再用「科室+位置」拼）', fin.name, 'PC-20180817RHBE');
   eq('内外网两个地址分开存', fin.ip + '|' + fin.ip_extra, '200.100.60.34|10.10.10.248');
   eq('生产日期规范化成 YYYY-MM-DD', fin.produce_date, '2018-06-02');
   eq('硬件明细落库（CPU/硬盘/内存/显示器）',
     [fin.cpu, fin.disk, fin.ram, fin.monitor].join(' | '),
     "Intel Core i5-7500 | 256G+1T | DDR4 - 8G | Lenovo-LCD 20'");
-  eq('设备名称由「科室+位置」自动拼', fin.name, '财务科 医生办（一）');
+  eq('设备性质落库', fin.nature, '政府采购设备');
 
   const prt = (await call('admin', 'GET', '/api/terminals?keyword=' + encodeURIComponent('护士站（一）'))).json.data.list[0];
   eq('打印机行：耗材型号落库', prt.consumable, 'T7741');
   eq('打印机的类型归到「打印机」', prt.kind, '打印机');
+  eq('★ 打印机没有计算机名 → 名称 = 统计类别 + 型号', prt.name, '黑白打印机 Epson M101');
+
+  const blankCat = (await call('admin', 'GET', '/api/terminals?keyword=' + encodeURIComponent('护士站（三）'))).json.data.list[0];
+  eq('★ 统计类别空着的行：类型按 sheet 名认成「打印机」，不是默认 PC', blankCat.kind, '打印机');
+  eq('这种行的名称退回「型号」', blankCat.name, 'HP P1108');
+  eq('来源 sheet 记下来了（溯源用）', blankCat.src_sheet, '打印机');
 
   const dash = (await call('admin', 'GET', '/api/terminals?keyword=' + encodeURIComponent('LIS 工作站'))).json.data.list[0];
   eq('★ 「-」按空处理（资产编码）', dash.asset_no, '');
   eq('★ MAC 的「内网：」前缀被剥掉并统一成横杠', dash.mac, 'F4-6B-8C-02-80-48');
-  eq('★ 冒号分隔的 MAC 也归一成横杠', (await call('admin', 'GET', '/api/terminals?keyword=' + encodeURIComponent('科密'))).json.data.list[0].mac,
+  eq('★ 冒号分隔的 MAC 也归一成横杠',
+    (await call('admin', 'GET', '/api/terminals?keyword=' + encodeURIComponent('科密'))).json.data.list[0].mac,
     'F8-D0-27-20-56-0C');
-  eq('扫码枪的类型靠「扫描」识别', (await call('admin', 'GET', '/api/terminals?keyword=' + encodeURIComponent('科密'))).json.data.list[0].kind, '扫码枪');
+  eq('扫码枪的类型靠「扫描」识别',
+    (await call('admin', 'GET', '/api/terminals?keyword=' + encodeURIComponent('科密'))).json.data.list[0].kind, '扫码枪');
 
   const again = await upload('admin', '/api/terminals/import', buildBook());
   eq('★ 同一份再导一次：0 新增', again.json.data.created, 0);
-  eq('★ 同一份再导一次：4 条全部「无变化」', again.json.data.unchanged, 4);
-  eq('★ 没有产生重复记录', (await call('admin', 'GET', '/api/terminals')).json.data.stats.total, beforeTotal + 4);
+  eq('★ 同一份再导一次：5 条全部「无变化」', again.json.data.unchanged, 5);
+  eq('★ 没有产生重复记录', (await call('admin', 'GET', '/api/terminals')).json.data.stats.total, beforeTotal + 5);
 
   // 改一处位置再导：应更新而不是新增；空的单元格不能把已有值洗掉
   const changedRows = pcRows.map((r) => r.slice());
@@ -382,11 +438,21 @@ function d(offset) {
   XLSX.utils.book_append_sheet(wb3, XLSX.utils.aoa_to_sheet(colonRows), '打印机');
   const colon = await upload('admin', '/api/terminals/import', XLSX.write(wb3, { type: 'buffer', bookType: 'xlsx' }));
   eq('★ MAC 换写法后仍然认出是同一台（0 新增）', colon.json.data.created, 0);
-  eq('★ 认出来之后算「无变化」', colon.json.data.unchanged, 2);
+  eq('★ 认出来之后算「无变化」', colon.json.data.unchanged, 3);
 
   const skipMode = await upload('admin', '/api/terminals/import?mode=skip', buildBook());
   eq('mode=skip：0 新增', skipMode.json.data.created, 0);
-  eq('mode=skip：4 条全部跳过', skipMode.json.data.skipped, 4);
+  eq('mode=skip：5 条全部跳过', skipMode.json.data.skipped, 5);
+
+  // 信息不足的行要单列出来，不能硬塞成无名记录
+  const thinBook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(thinBook, XLSX.utils.aoa_to_sheet([
+    ['院区', '科室', '位置'],
+    ['珠江街道', '体检科', ''],
+  ]), '计算机');
+  const thin = await upload('admin', '/api/terminals/import', XLSX.write(thinBook, { type: 'buffer', bookType: 'xlsx' }));
+  eq('★ 只有科室没有位置/编码/MAC 的行 → 记「信息不足」，不新增', thin.json.data.created, 0);
+  eq('信息不足计 1 行', thin.json.data.thinTotal, 1);
 
   const badFile = await upload('admin', '/api/terminals/import', Buffer.from('这不是 excel'), 'bad.xlsx');
   eq('乱传一个文件 → 400', badFile.status, 400);
@@ -408,10 +474,9 @@ function d(offset) {
   const exWb = XLSX.read(exBuf, { type: 'buffer', cellDates: true });
   const exAoa = XLSX.utils.sheet_to_json(exWb.Sheets[exWb.SheetNames[0]], { header: 1, defval: '' });
   const exHead = exAoa[0].map((h) => String(h).trim());
-  ok('★ 导出表头与 Excel 台账列名一致（院区/统计类别/工作组/计算机名/MAC/SN码…）',
-    ['院区', '资产编码', '区域', '楼层', '科室', '位置', '统计类别', '设备性质',
-      '工作组/计算机名', '内网地址', '外网地址', 'MAC', 'SN码', '生产日期', '型号',
-      '操作系统', 'CPU', '硬盘', '内存', '显示器尺寸', '耗材型号'].every((h) => exHead.indexOf(h) >= 0));
+  eq('★ 导出表头 = Excel 的 21 列，顺序也一致', exHead, EXCEL_HEADS);
+  eq('★ 导出表头里没有自造的那 9 列',
+    LEGACY_HEADS.filter((h) => exHead.indexOf(h) >= 0).length, 0);
   eq('导出行数 = 表头 + 全量台账', exAoa.length - 1, (await call('admin', 'GET', '/api/terminals')).json.data.stats.total);
   const exPc = exAoa.find((r) => r[exHead.indexOf('工作组/计算机名')] === 'PC-20180817RHBE');
   ok('导出里能找到刚导进来的那台', !!exPc);
@@ -426,14 +491,13 @@ function d(offset) {
   eq('★ 只读角色导入 → 403', viewerImp.status, 403);
 
   console.log('\n== 元数据接口 ==');
-
   const meta = await call('admin', 'GET', '/api/terminals/meta');
   eq('meta 返回 200', meta.status, 200);
-  ok('meta 给了类型清单（含 PC / 打印机 / 自助机）',
+  ok('meta 给了设备大类清单（含 PC / 打印机 / 自助机）',
     ['PC', '打印机', '自助机'].every((k) => meta.json.data.kinds.indexOf(k) >= 0));
-  ok('meta 给了状态清单（含 在用 / 报废）',
-    ['在用', '报废'].every((k) => meta.json.data.statuses.indexOf(k) >= 0));
-  eq('meta 的保修提醒阈值是 30 天', meta.json.data.warranty_soon_days, 30);
+  eq('★ meta 不再给状态清单（Excel 里没有状态）', meta.json.data.statuses, undefined);
+  eq('★ meta 不再给保修阈值（Excel 里没有保修）', meta.json.data.warranty_soon_days, undefined);
+  eq('★ meta 给出 21 个字段定义（前端/导入模板共用一份）', (meta.json.data.fields || []).length, 21);
   eq('/meta 不会被当成 :id 吞掉（没返回 404）', meta.status, 200);
 
   console.log('\n========================================');

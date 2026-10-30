@@ -21,7 +21,7 @@ function fail(res, r, fallback) {
   res.status(code).json({ code, message: (r && r.error) || fallback || '操作失败' });
 }
 
-// GET /api/terminals/meta —— 类型/状态/科室清单（新建设备、筛选下拉用）
+// GET /api/terminals/meta —— 科室/院区/区域/楼层/统计类别/设备性质清单（新增、筛选下拉用）
 router.get('/meta', (req, res) => {
   try {
     res.json({ code: 0, data: repo.meta() });
@@ -30,7 +30,7 @@ router.get('/meta', (req, res) => {
   }
 });
 
-// GET /api/terminals/options —— 工单表单的设备下拉（只给非报废，最多 300 条）
+// GET /api/terminals/options —— 工单表单的设备下拉（最多 300 条）
 router.get('/options', (req, res) => {
   try {
     res.json({ code: 0, data: repo.options({ keyword: req.query.keyword, department: req.query.department }) });
@@ -40,15 +40,14 @@ router.get('/options', (req, res) => {
   }
 });
 
-// GET /api/terminals —— 列表（关键词/科室/类型/状态/保修/排序/分页）
+// GET /api/terminals —— 列表（关键词/科室/统计类别/设备性质/排序/分页）
 router.get('/', (req, res) => {
   try {
     res.json({ code: 0, data: repo.list({
       keyword: req.query.keyword,
       department: req.query.department,
-      kind: req.query.kind,
-      status: req.query.status,
-      warranty: req.query.warranty,
+      stat_category: req.query.stat_category,
+      nature: req.query.nature,
       sort: req.query.sort,
       page: req.query.page,
       pageSize: req.query.pageSize,
@@ -66,8 +65,8 @@ router.post('/', (req, res) => {
   try {
     const r = repo.create(req.body || {}, req.user);
     if (!r.ok) return fail(res, r);
-    logAction(req, '新增终端设备', String((req.body || {}).name || '') + ' #' + r.id);
-    res.json({ code: 0, data: { id: r.id } });
+    logAction(req, '新增终端设备', (r.name || '') + ' #' + r.id);
+    res.json({ code: 0, data: { id: r.id, name: r.name || '' } });
   } catch (e) {
     res.status(500).json({ code: 500, message: '保存失败：' + ((e && e.message) || e) });
   }
@@ -78,7 +77,7 @@ router.put('/:id', (req, res) => {
   try {
     const r = repo.update(req.params.id, req.body || {});
     if (!r.ok) return fail(res, r);
-    logAction(req, '修改终端设备', String((req.body || {}).name || '') + ' #' + req.params.id);
+    logAction(req, '修改终端设备', (r.name || '') + ' #' + req.params.id);
     res.json({ code: 0 });
   } catch (e) {
     res.status(500).json({ code: 500, message: '保存失败：' + ((e && e.message) || e) });
@@ -105,7 +104,7 @@ const multer = require('multer');
 const XLSX = require('xlsx');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
-const ALL_COLUMNS = repo.EXCEL_COLUMNS.concat(repo.SYSTEM_COLUMNS);
+const ALL_COLUMNS = repo.EXCEL_COLUMNS;
 
 /** 表头归一化：去空格、全角括号转半角、英文转小写 —— 用户从 Excel 里拷来拷去很容易带空格 */
 function normHeader(h) {
@@ -116,7 +115,12 @@ function normHeader(h) {
     .toLowerCase();
 }
 
-/** 表头 → 内部字段。除了我们自己写出去的列名，还认一批常见异写（台账在院里被改过好几版） */
+/**
+ * 表头 → 内部字段。除了我们自己写出去的 21 个列名，还认一批常见异写（台账在院里被改过好几版）。
+ * ★ 只映射到 21 列里的字段。以前这里还认「设备名称 / 状态 / 责任人 / 保修期 / 备注」，
+ *   表结构重建后这几列已经不存在，再映射过去会让导入静默丢字段 —— 不如不认，
+ *   多出来的列按「系统不认识的列」忽略掉（导入说明里已写明这一点）。
+ */
 const HEADER_MAP = (() => {
   const m = {};
   ALL_COLUMNS.forEach((c) => { m[normHeader(c.name)] = c.key; });
@@ -131,13 +135,11 @@ const HEADER_MAP = (() => {
     '出厂日期': 'produce_date', '生产时间': 'produce_date',
     '所属科室': 'department', '使用科室': 'department', '部门': 'department',
     '安装位置': 'location', '房间': 'location', '具体位置': 'location',
-    '设备类型': 'stat_category', '类型': 'kind', '设备类别': 'stat_category', '统计分类': 'stat_category',
+    // 「类型／设备类型」在院里那份表里指的就是统计类别，不是系统自造的大类
+    '设备类型': 'stat_category', '类型': 'stat_category', '设备类别': 'stat_category', '统计分类': 'stat_category',
     '产权性质': 'nature', '来源': 'nature',
     '显示器': 'monitor', '显示器尺寸(inch)': 'monitor',
     '耗材': 'consumable', '耗材规格': 'consumable', '硒鼓型号': 'consumable',
-    '保修期': 'warranty_end', '保修到期': 'warranty_end', '保修截止': 'warranty_end',
-    '使用人': 'owner', '责任人': 'owner', '保管人': 'owner',
-    '备注说明': 'note', '说明': 'note',
   };
   Object.keys(alias).forEach((k) => { m[normHeader(k)] = alias[k]; });
   return m;
@@ -177,14 +179,12 @@ router.get('/template', (req, res) => {
         'MAC': '80-3F-5D-08-F9-55', 'SN码': 'M706TL9J', '生产日期': '2018-06-02',
         '型号': '启天M410-N000', '操作系统': 'Windows 10', 'CPU': 'Intel Core i5-7500',
         '硬盘': '256G+1T', '内存': 'DDR4 - 8G', '显示器尺寸': "Lenovo-LCD 20'",
-        '设备名称': '财务科 医生办（一）', '状态': '在用', '责任人': '陈宝玲',
       }),
       mk({
         '院区': '珠江街道', '资产编码': '0104020101686', '区域': '住院楼', '楼层': '三楼',
         '科室': '住院儿科', '位置': '护士站（一）', '统计类别': '黑白打印机', '设备性质': '租赁设备',
         '内网地址': '200.100.60.37', 'MAC': '04-0E-3C-E2-A6-14', 'SN码': 'B6S01A',
         '生产日期': '2023-07-10', '型号': 'Epson M101', '耗材型号': 'T7741',
-        '设备名称': '住院儿科 护士站（一）', '状态': '在用',
       }),
     ];
 
@@ -196,14 +196,18 @@ router.get('/template', (req, res) => {
       [''],
       ['一、表头怎么放'],
       ['1. 第一行必须是表头（列名），第二行起是数据；列的顺序不限，系统按列名认。'],
-      ['2. 系统只认它认识的列名，多出来的列（比如自己加的「验收人」）会被忽略，不会报错。'],
+      ['2. 系统只认下面 21 个列名，多出来的列（比如自己加的「验收人」「备注」）会被忽略，不会报错：'],
+      ['   院区 / 资产编码 / 区域 / 楼层 / 科室 / 位置 / 统计类别 / 设备性质 / 工作组/计算机名 /'],
+      ['   内网地址 / 外网地址 / MAC / SN码 / 生产日期 / 型号 / 操作系统 / CPU / 硬盘 / 内存 /'],
+      ['   显示器尺寸 / 耗材型号'],
       ['3. 列名少几个也没关系：这台设备没有的字段留空就行（比如打印机不会填 CPU）。'],
       ['4. 支持把院里现成的台账直接拿来导入 —— 计算机 / 打印机 / 其他设备分成几个 sheet 也行，'],
       ['   系统会逐个 sheet 读，只跳过它一个字段都认不出的表（例如「填写说明」）。'],
       [''],
       ['二、怎么判断「同一台设备」（查重顺序）'],
       ['1. 先比 MAC（会先把「内网：/外网：」前缀去掉、冒号和横杠统一，所以两种写法算同一台）；'],
-      ['2. 再比 SN 码；3. 再比资产编码；4. 都没有时按「科室+位置+统计类别+型号」比。'],
+      ['2. 再比 SN 码；3. 再比资产编码；4. 再比「工作组/计算机名」；'],
+      ['5. 都没有时按「科室+位置+统计类别+型号」比（这四项里至少要有两项）。'],
       ['所以同一份台账导第二次不会翻倍，只会更新。'],
       [''],
       ['三、已有设备怎么处理'],
@@ -213,12 +217,13 @@ router.get('/template', (req, res) => {
       ['3. 也可以选「只新增，跳过已有」，用于第一次摸底。'],
       [''],
       ['四、几个容易填错的列'],
-      ['1. 生产日期 / 保修至：YYYY-MM-DD（2023-07-10），也接受 2023/7/10。'],
+      ['1. 生产日期：YYYY-MM-DD（2023-07-10），也接受 2023/7/10。'],
       ['2. MAC：横杠、冒号、带不带「内网：」前缀都能认。'],
       ['3. 「-」会被当成「没有」，与原台账的习惯一致。'],
-      ['4. 统计类别：按院里原来的说法填（台式计算机 / 黑白打印机 / 多功能一体机 …），'],
+      ['4. 统计类别：照院里原来的说法填（台式计算机 / 黑白打印机 / 多功能一体机 …），'],
       ['   系统会自己归到「PC / 打印机 / 一体机」这类大类型里，原始说法仍然保留。'],
-      ['5. 设备名称：可以不填，系统会用「科室 + 位置」自动拼一个；填了就以你填的为准。'],
+      ['5. 工作组/计算机名：列表里「设备」那一列优先显示它；没这一列的设备（打印机等）'],
+      ['   显示「统计类别 + 型号」，再空就显示资产编码。所以尽量别全空着。'],
       [''],
       ['五、导入前请删掉本表的两行示例数据。'],
     ];
@@ -242,9 +247,8 @@ router.get('/export', (req, res) => {
     const rows = repo.exportList({
       keyword: req.query.keyword,
       department: req.query.department,
-      kind: req.query.kind,
-      status: req.query.status,
-      warranty: req.query.warranty,
+      stat_category: req.query.stat_category,
+      nature: req.query.nature,
       sort: req.query.sort,
     });
 
