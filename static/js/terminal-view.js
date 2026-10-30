@@ -144,12 +144,15 @@
                 </td>
                 <td><span class="tag" :class="statusTag(r.status)">{{ r.status }}</span></td>
                 <td class="ops">
+                  <!-- 四个按钮是上限：再加就得到「点不到」的程度。
+                       删除放在最后并统一用 btn-danger，跟详情弹窗里的那个是同一个动作、
+                       同一套确认文案（会说清有几张工单会被解绑）。 -->
                   <button v-if="canReport" class="btn btn-sm btn-outline" @click="reportFault(r)"
                           :disabled="r.status === '报废'" :title="r.status === '报废' ? '报废设备不再接受报修' : '带着这台设备去填工单'">报修</button>
                   <button class="btn btn-sm btn-outline" @click="openDetail(r)">详情</button>
-                  <!-- 删除刻意不放列表：九列已经排满，再加一个按钮就会被裁掉半个（功能不可见等于没有），
-                       而且删除是低频高危操作，放在详情里还能顺手把「有 N 张工单会解绑」说清楚 -->
                   <button v-if="canManage" class="btn btn-sm btn-outline" @click="openForm(r)">编辑</button>
+                  <button v-if="canManage" class="btn btn-sm btn-outline btn-danger" @click="del(r)"
+                          :title="'删除这台设备（历史工单会保留，只解绑）'">删除</button>
                 </td>
               </tr>
             </tbody>
@@ -157,7 +160,8 @@
         </div>
         <div class="hint">
           默认按科室与位置排 —— 现场找人时是按「哪个科、哪一层」找的，不是按录入时间。
-          点设备名看详情与这台机器的全部报修记录。
+          点设备名看详情与这台机器的全部报修记录。<b>删除设备不会删工单</b>：
+          历史工单会保留，只是不再关联到这台机器（排查依据要活得比设备久）。
         </div>
       </div>
 
@@ -434,6 +438,8 @@
         // 只靠右上角 toast 是不够的：名称在弹窗最上方，用户填完底下的字段再点保存，
         // 视线在右下角的按钮上，顶部一闪而过的提示经常被当成「按钮坏了」。
         badField: '',
+        // 从【IP 管理】点「查看设备」跳过来时先记下 id，列表加载完再开详情
+        pendingOpen: 0,
       };
     },
     computed: {
@@ -448,7 +454,23 @@
         if (k) { sessionStorage.removeItem('his_terminal_kw'); this.kw = k; }
       } catch (e) { /* 隐私模式忽略 */ }
       this.loadMeta();
+      // 从【IP 管理】点「查看设备」跳过来：带的是设备 id，进来直接开到详情弹窗
+      try {
+        const open = Number(sessionStorage.getItem('his_terminal_open') || 0);
+        if (open) {
+          sessionStorage.removeItem('his_terminal_open');
+          this.pendingOpen = open;
+        }
+      } catch (e) { /* 隐私模式忽略 */ }
+      this.onOpenTerminal = (ev) => {
+        const id = Number((ev && ev.detail) || 0);
+        if (id) this.openDetail({ id });
+      };
+      window.addEventListener('his:open-terminal', this.onOpenTerminal);
       this.load();
+    },
+    beforeUnmount() {
+      if (this.onOpenTerminal) window.removeEventListener('his:open-terminal', this.onOpenTerminal);
     },
     methods: {
       async loadMeta() {
@@ -488,6 +510,13 @@
           this.$toast(e.message, 'err');
         } finally {
           this.loading = false;
+        }
+        // 从 IP 管理跳过来时要求「进来就看到那台设备」：等列表刷完再开详情，
+        // 否则详情先弹出来、背后列表还是空的，关掉之后像什么都没发生。
+        if (this.pendingOpen) {
+          const id0 = this.pendingOpen;
+          this.pendingOpen = 0;
+          this.openDetail({ id: id0 });
         }
       },
       search() { this.page = 1; this.load(); },

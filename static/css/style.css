@@ -3055,17 +3055,27 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-base); }
 .ip-table .c-cap   { width: 90px; }
 .ip-table .c-use   { width: 220px; }
 /* IP 登记表的列 */
-.ip-table .c-ip    { width: 130px; }
+.ip-table .c-ip    { width: 152px; }
 .ip-table .c-st    { width: 84px; }
 .ip-table .c-host  { width: 180px; }
 .ip-table .c-owner { width: 130px; }
 .ip-table .c-type  { width: 110px; }
 .ip-table .c-mac   { width: 150px; }
-.ip-table .c-note  { width: 170px; }
+.ip-table .c-note  { width: 160px; }
 .ip-table .c-ops   { width: 210px; }
 
-.ip-usage { display: flex; align-items: center; gap: 8px; }
-.ip-track {
+/* 来源标记：这一行来自【终端资产】台账（只读同步，不是本页登记的）。
+   用 info 蓝跟「已使用」同一个色系，不再引入新颜色 —— 地图上的「已使用」格同理。 */
+.chip-term {
+  background: var(--info-soft);
+  border-color: var(--info-line);
+  color: var(--info);
+  font-size: var(--fs-xs);
+  padding: 1px 5px;
+  margin-right: 4px;
+}
+
+.ip-usage { display: flex; align-items: center; gap: 8px; }.ip-track {
   flex: 1;
   min-width: 60px;
   height: 8px;
@@ -3371,7 +3381,9 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-base); }
 .term-table .c-dev { width: 236px; }
 .term-table .c-dept { width: 154px; }
 .term-table .c-warranty { width: 120px; }
-.term-table .c-ops { width: 168px; }
+/* 操作列按「最多四个 btn-sm」定宽：报修 / 详情 / 编辑 / 删除。
+   再往里塞第五个就会被裁掉半个 —— 功能不可见等于没有，宁可另开一个入口。 */
+.term-table .c-ops { width: 214px; }
 
 /* 必填项没填就地标红（第十二节）。
    为什么不用单纯 toast：名称在弹窗最上方，用户滚到最底部按保存，视线在右下角，

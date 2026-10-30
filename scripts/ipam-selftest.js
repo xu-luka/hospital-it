@@ -485,8 +485,10 @@ ok('segmentMap 不返回明文没用的字段，只给画图要用的', () => {
   const s = ipam.listSegments().list.filter((x) => x.cidr === '172.31.1.0/24')[0];
   const m = ipam.segmentMap(s.id);
   eq(typeof m.truncated, 'boolean');
+  // terminal：这一格是不是「终端资产占用、本网段没手工登记」——
+  // 分布图要据此把格子画成已用并在提示里点出设备名，所以它属于画图必需品，不是冗余字段
   const keys = Object.keys(m.cells[10]).sort().join(',');
-  eq(keys, 'ip,label,reg,state,tip');
+  eq(keys, 'ip,label,reg,state,terminal,tip');
 });
 
 /* ==================== 汇总 ==================== */

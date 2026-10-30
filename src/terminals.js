@@ -552,6 +552,43 @@ function remove(id) {
   return { ok: true, detached_issues: n };
 }
 
+/**
+ * 供【IP 管理】用：只取「填了 IP」的终端，字段精简、不分页。
+ *
+ * 那边要的是一张「这个地址被谁占着」的对照表，工单统计、保修状态一律用不上，
+ * 所以不套 SELECT_WITH_STATS —— 每行三个子查询乘几百行是白费。
+ *
+ * 报废设备也返回（released=true）：机器报废了地址通常已经回收，算不算占用由调用方定，
+ * 但**必须能让用户看见**，否则同一台机器的旧 IP 会静静地挡住新设备。
+ */
+function ipList() {
+  if (!ensure()) return [];
+  try {
+    return issueDb.getDb().prepare(
+      `SELECT id, name, kind, department, location, owner, ip, ip_extra, mac, hostname, status
+       FROM terminals
+       WHERE TRIM(ip) <> ''
+       ORDER BY id ASC`
+    ).all().map((r) => ({
+      terminal_id: Number(r.id),
+      name: r.name || '',
+      kind: r.kind || '',
+      department: r.department || '',
+      location: r.location || '',
+      owner: r.owner || '',
+      ip: String(r.ip || '').trim(),
+      ip_extra: r.ip_extra || '',
+      mac: r.mac || '',
+      hostname: r.hostname || '',
+      status: r.status || '',
+      released: r.status === '报废',
+    }));
+  } catch (e) {
+    console.warn('[terminals] 读取终端 IP 清单失败（IP 管理仍可用）：' + ((e && e.message) || e));
+    return [];
+  }
+}
+
 /** 供工单侧使用：传 device_id 时取一条精简信息（自动带科室/位置用） */
 function brief(id) {
   if (!id || !ensure()) return null;
@@ -779,5 +816,5 @@ module.exports = {
   KINDS, STATUSES, WARRANTY_SOON_DAYS, EXCEL_COLUMNS, SYSTEM_COLUMNS, FIELDS,
   ensure, list, get, issuesOf, options, meta, exportList,
   create, update, remove, brief, shape, warrantyOf, daysBetween,
-  importRows, keyOf, normMac, deriveName, kindOfStat,
+  importRows, keyOf, normMac, deriveName, kindOfStat, ipList,
 };

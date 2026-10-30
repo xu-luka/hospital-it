@@ -240,6 +240,107 @@ function usedSetOf(segmentId) {
   return new Set(rows.map((r) => String(r.ip)));
 }
 
+/* ==================== 与【终端资产】的联动 ====================
+ *
+ * 终端资产（terminals，在 his.db）里登记过 IP 的机器，不该再到 IP 管理里手工登记一遍 ——
+ * 那样会有两份记录，改一处忘一处，最后谁都说不清哪个是准的。所以这里走**读时合并**：
+ *
+ *   · terminals 是唯一事实来源，本模块**不往 ip_records 写任何东西**；
+ *   · 只在「列登记 / 算空闲 / 画分布图」时把终端 IP 当成已被占用，并带上设备名、
+ *     科室、位置，让人一眼看出这个地址是谁在用；
+ *   · 于是终端改 IP、删设备、改成报废，IP 管理这边立刻跟着变，永远不会漂移。
+ *
+ * 为什么不用写时同步（保存终端时往 ip_records 插一条）：
+ *   ① 终端常常在还没建网段时就有 IP，那时根本没地方插；
+ *   ② ip_records 有 (segment_id, ip) 唯一索引，写冲突会把「保存设备」这种正常操作变成报错；
+ *   ③ 双写必然漂移，而漂移在这里的代价是「空闲地址里推荐一个其实已被占的 IP」。
+ *
+ * 「报废」设备的地址**不算**占用：机器已废弃，地址多半早被回收，
+ * 算成占用会让空闲地址凭空少一批。它们仍会列出来，只是标「已报废、地址已释放」。
+ */
+
+/** 读终端资产里「有 IP」的记录。任何异常都降级成空数组 —— IP 管理不能因此不可用。 */
+function terminalIps() {
+  try {
+    // 懒 require：terminals 用的是 his.db，加载期互相牵连没必要，也让本模块能单独自测
+    const repo = require('./terminals');
+    return (repo && repo.ipList && repo.ipList()) || [];
+  } catch (e) {
+    console.warn('[ipam] 读取终端资产 IP 失败（IP 管理仍可用，只是不显示终端占用）：'
+      + ((e && e.message) || e));
+    return [];
+  }
+}
+
+/** 落在某网段内、且算作「被占用」的终端地址（报废的不算） */
+function terminalIn(cidr) {
+  const out = [];
+  terminalIps().forEach((t) => {
+    if (t.released) return;
+    if (!ipInCidr(t.ip, cidr)) return;
+    out.push(t);
+  });
+  return out;
+}
+
+/** 这个地址是不是已经被终端资产占了；被占则返回那台设备（可能多台共用） */
+function terminalAt(ip, exceptIp) {
+  const v = String(ip == null ? '' : ip).trim();
+  if (!v) return null;
+  const hits = terminalIps().filter((t) => !t.released && t.ip === v && t.ip !== exceptIp);
+  return hits.length ? { first: hits[0], count: hits.length, all: hits } : null;
+}
+
+/** 拼一句人话：「门诊3号诊室工作站（门诊部 / 门诊楼3层3诊室）」 */
+function terminalLabel(t) {
+  if (!t) return '';
+  const where = [t.department, t.location].filter(Boolean).join(' / ');
+  return '「' + t.name + '」' + (where ? '（' + where + '）' : '');
+}
+
+/**
+ * 终端资产 → 一条虚拟的「IP 登记」记录。
+ * id 用字符串 't<设备id>'：前端 v-for 的 key 需要唯一，而数值 id 会跟 ip_records 的 id 撞上
+ * （撞上之后的后果是：删除一条手工登记，界面上删掉的是另一台终端）。
+ */
+function shapeTerminalRecord(t, seg) {
+  const segName = seg ? (seg.name || '') : '';
+  return {
+    id: 't' + t.terminal_id,
+    source: 'terminal',
+    terminal_id: t.terminal_id,
+    segment_id: seg ? seg.id : 0,
+    segment_name: segName,
+    segment_cidr: seg ? seg.cidr : '',
+    ip: t.ip,
+    ip_num: parseIp(t.ip) === null ? 0 : parseIp(t.ip),
+    status: t.released ? 'free' : 'used',
+    status_label: t.released ? '已释放' : '已使用',
+    hostname: t.hostname || t.name,
+    mac: t.mac || '',
+    owner: t.owner || '',
+    device_type: t.kind || '',
+    note: '终端资产 · ' + [t.department, t.location].filter(Boolean).join(' / '),
+    created_at: '',
+    updated_at: '',
+    released: !!t.released,
+    device: {
+      id: t.terminal_id, name: t.name, kind: t.kind, status: t.status,
+      department: t.department, location: t.location, owner: t.owner, hostname: t.hostname,
+    },
+  };
+}
+
+/** 某个 IP 落在哪些网段里（可能没有，也可能多个 —— 全院 /16 与科室 /24 并存很常见） */
+function segmentOfIp(ip, segs) {
+  const list = (segs || db.prepare('SELECT * FROM net_segments ORDER BY id ASC').all());
+  let hit = null;
+  for (const s of list) {
+    if (ipInCidr(ip, s.cidr)) { hit = s; break; }   // 取第一个（id 最小的那层）
+  }
+  return hit;
+}
+
 /**
  * 批量粘贴解析：一行一个，支持
  *   · `192.168.1.10`                      —— 只有 IP
@@ -337,7 +438,13 @@ function shapeSegment(row, stats) {
     registered: stats ? stats.registered : 0,
     used: stats ? stats.used : 0,
     conflict: stats ? stats.conflict : 0,
-    free_count: stats && c ? Math.max(0, c.hostCount - stats.registered) : 0,
+    free_count: stats && c
+      ? Math.max(0, c.hostCount - stats.registered - (stats.terminal_only || 0))
+      : 0,
+    // 终端资产里登记了 IP、且落在这个网段里的设备数（只读联动，不落库）
+    terminal: stats ? (stats.terminal || 0) : 0,
+    // 其中「没在本网段手工登记过」的那部分 —— 空闲地址计算要扣掉的就是它
+    terminal_only: stats ? (stats.terminal_only || 0) : 0,
   };
 }
 
@@ -355,6 +462,7 @@ function shapeRecord(row) {
     owner: row.owner || '',
     device_type: row.device_type || '',
     note: row.note || '',
+    source: 'manual',
     created_at: row.created_at || '',
     updated_at: row.updated_at || '',
   };
@@ -377,6 +485,33 @@ function segmentStats() {
       conflict: Number(r.conflict) || 0,
     };
   });
+
+  /* 终端资产占用（只读 his.db，不写库）。
+     分两个数：
+       terminal      = 落在这个网段里的终端设备数
+       terminal_only = 其中「本网段还没手工登记过」的，空闲地址要扣的正是这部分
+     注意手动登记优先：同一个 IP 两边都有时只算一次，否则 free_count 会被扣两遍。 */
+  try {
+    const terms = terminalIps().filter((t) => !t.released);
+    if (terms.length) {
+      const manual = {};
+      db.prepare('SELECT segment_id, ip FROM ip_records').all().forEach((r) => {
+        const k = String(r.segment_id);
+        (manual[k] || (manual[k] = new Set())).add(String(r.ip));
+      });
+      db.prepare('SELECT id, cidr FROM net_segments').all().forEach((s) => {
+        const k = String(s.id);
+        const hit = terms.filter((t) => ipInCidr(t.ip, s.cidr));
+        if (!hit.length) return;
+        const cur = map[k] || (map[k] = { registered: 0, used: 0, conflict: 0 });
+        const set = manual[k];
+        cur.terminal = hit.length;
+        cur.terminal_only = hit.filter((t) => !(set && set.has(t.ip))).length;
+      });
+    }
+  } catch (e) {
+    console.warn('[ipam] 统计终端占用失败（按未占用计算）：' + ((e && e.message) || e));
+  }
   return map;
 }
 
@@ -402,10 +537,14 @@ function listSegments() {
     registered: out.reduce((s, x) => s + x.registered, 0),
     used: out.reduce((s, x) => s + x.used, 0),
     conflict: out.reduce((s, x) => s + x.conflict, 0),
+    terminal: out.reduce((s, x) => s + (x.terminal || 0), 0),
+    terminal_only: out.reduce((s, x) => s + (x.terminal_only || 0), 0),
   };
-  summary.free_count = Math.max(0, summary.host_count - summary.registered);
+  summary.free_count = Math.max(0, summary.host_count - summary.registered - summary.terminal_only);
+  // 使用率按「真占了几个地址」算：手工登记的在用 + 终端资产里认领的（去掉重复计算的）
+  const occupied = summary.used + summary.terminal_only;
   summary.usage_pct = summary.host_count
-    ? Math.round(summary.used / summary.host_count * 1000) / 10 : 0;
+    ? Math.round(occupied / summary.host_count * 1000) / 10 : 0;
   return { list: out, summary, statuses: STATUSES };
 }
 
@@ -486,11 +625,36 @@ function removeSegment(id) {
 
 /* ==================== IP 登记 ==================== */
 
+/** 关键词命中（终端虚拟记录用，字段与手工登记的搜索范围对齐） */
+function terminalMatch(t, kw) {
+  if (!kw) return true;
+  const k = kw.toLowerCase();
+  return [t.ip, t.name, t.hostname, t.owner, t.mac, t.kind, t.department, t.location,
+    t.ip_extra].join(' ').toLowerCase().indexOf(k) >= 0;
+}
+
+// 合并模式下「取全量再切片」的上限。超过这个量说明手工登记本身已经过万，
+// 那就退回 SQL 分页、只列手工登记（并显式告知），绝不能悄悄把终端那部分丢掉。
+const MERGE_MAX = 5000;
+
+/**
+ * 登记列表。source: all（默认）/ manual / terminal。
+ *
+ * ★ 为什么改成「取全量 → 内存合并 → 切片」：
+ *   终端资产的 IP 存在另一个库（his.db），SQL 里 JOIN 不了；
+ *   而如果只在当前页拼终端记录，总数、分页、排序全都会错位
+ *   —— 用户翻到第 3 页，看到的条数跟页脚写的对不上，比不显示更糟。
+ */
 function listIps(opts) {
   const o = opts || {};
   const segId = Number(o.segment_id) || 0;
   const kw = trim(o.keyword);
   const status = trim(o.status);
+  const src = trim(o.source);
+  const source = (src === 'manual' || src === 'terminal') ? src : 'all';
+  const page = Math.max(1, Number(o.page) || 1);
+  const pageSize = Math.min(500, Math.max(1, Number(o.pageSize) || 100));
+
   const where = [];
   const params = [];
   if (segId) { where.push('r.segment_id = ?'); params.push(segId); }
@@ -501,16 +665,71 @@ function listIps(opts) {
     params.push(lk, lk, lk, lk, lk, lk);
   }
   const w = where.length ? ('WHERE ' + where.join(' AND ')) : '';
-  const total = db.prepare('SELECT COUNT(*) c FROM ip_records r ' + w).get(...params).c;
+  const manualTotal = db.prepare('SELECT COUNT(*) c FROM ip_records r ' + w).get(...params).c;
 
-  const page = Math.max(1, Number(o.page) || 1);
-  const pageSize = Math.min(500, Math.max(1, Number(o.pageSize) || 100));
-  const rows = db.prepare(
-    `SELECT r.*, s.name AS segment_name, s.cidr AS segment_cidr
-     FROM ip_records r LEFT JOIN net_segments s ON s.id = r.segment_id
-     ${w} ORDER BY r.segment_id ASC, r.ip_num ASC, r.id ASC LIMIT ? OFFSET ?`
-  ).all(...params, pageSize, (page - 1) * pageSize);
-  return { list: rows.map(shapeRecord), total, page, pageSize, statuses: STATUSES };
+  const selectSql = `SELECT r.* FROM ip_records r ${w}
+     ORDER BY r.segment_id ASC, r.ip_num ASC, r.id ASC`;
+
+  // 只列手工登记：保持原来的 SQL 分页，行为一字不变
+  if (source === 'manual') {
+    const rows = db.prepare(selectSql + ' LIMIT ? OFFSET ?')
+      .all(...params, pageSize, (page - 1) * pageSize);
+    return {
+      list: rows.map(shapeRecord), total: manualTotal, page, pageSize,
+      statuses: STATUSES, manual_total: manualTotal, terminal_total: 0,
+    };
+  }
+
+  // 手工登记太多 → 退回分页，明确告知没有合并（不静默丢数据）
+  if (source === 'all' && manualTotal > MERGE_MAX) {
+    const rows = db.prepare(selectSql + ' LIMIT ? OFFSET ?')
+      .all(...params, pageSize, (page - 1) * pageSize);
+    return {
+      list: rows.map(shapeRecord), total: manualTotal, page, pageSize,
+      statuses: STATUSES, manual_total: manualTotal, terminal_total: 0,
+      merge_skipped: true,
+      merge_note: '手工登记已有 ' + manualTotal + ' 条，超过单次合并上限，本页只列手工登记。'
+        + '可以按网段筛选后再看，或切到「终端资产」来源单独查看。',
+    };
+  }
+
+  // ---- 终端资产侧：按同样的筛选条件生成虚拟记录 ----
+  const segs = db.prepare('SELECT * FROM net_segments ORDER BY id ASC').all();
+  const terms = terminalIps()
+    .filter((t) => {
+      if (!terminalMatch(t, kw)) return false;
+      if (segId) {
+        const s = segmentOfIp(t.ip, segs);
+        if (!s || Number(s.id) !== segId) return false;
+      }
+      if (status) {
+        const st = t.released ? 'free' : 'used';
+        if (st !== status) return false;
+      }
+      return true;
+    })
+    .map((t) => shapeTerminalRecord(t, segmentOfIp(t.ip, segs)));
+
+  if (source === 'terminal') {
+    terms.sort((a, b) => (a.segment_id - b.segment_id) || (a.ip_num - b.ip_num));
+    const start = (page - 1) * pageSize;
+    return {
+      list: terms.slice(start, start + pageSize), total: terms.length, page, pageSize,
+      statuses: STATUSES, manual_total: 0, terminal_total: terms.length,
+    };
+  }
+
+  // ---- 合并 ----
+  const manualAll = db.prepare(selectSql).all(...params).map(shapeRecord);
+  const all = manualAll.concat(terms);
+  all.sort((a, b) => (a.segment_id - b.segment_id) || (a.ip_num - b.ip_num)
+    || String(a.ip).localeCompare(String(b.ip)));
+  const start = (page - 1) * pageSize;
+  return {
+    list: all.slice(start, start + pageSize), total: all.length, page, pageSize,
+    statuses: STATUSES,
+    manual_total: manualAll.length, terminal_total: terms.length,
+  };
 }
 
 /**
@@ -533,6 +752,17 @@ function createIp(data) {
     return {
       ok: false,
       error: 'IP ' + ip + ' 在该网段内已登记' + (dup.hostname ? '（' + dup.hostname + '）' : '') + '，请直接编辑那一条',
+    };
+  }
+  // 终端资产已经认领了这个地址 → 不再手工登记一条，否则两份记录一定漂移
+  const owner = terminalAt(ip);
+  if (owner) {
+    return {
+      ok: false,
+      error: 'IP ' + ip + ' 已被终端资产' + terminalLabel(owner.first)
+        + (owner.count > 1 ? '等 ' + owner.count + ' 台设备' : '') + ' 占用，无需重复登记。'
+        + '要改这个地址，请到【终端资产】改那台设备的 IP。',
+      terminal_owner: owner.first,
     };
   }
   const status = STATUS_CODES.indexOf(trim(data.status)) >= 0 ? trim(data.status) : 'used';
@@ -563,6 +793,19 @@ function updateIp(id, data) {
   const dup = db.prepare('SELECT id FROM ip_records WHERE segment_id = ? AND ip = ? AND id <> ?')
     .get(Number(segId), ip, Number(id));
   if (dup) return { ok: false, error: 'IP ' + ip + ' 在该网段内已被其它记录登记' };
+  // 只在「换成另一个地址」时检查终端占用：老数据里可能本来就有和终端重复的地址，
+  // 那种记录改备注、改使用人不该被永久拦住（否则只能删了重建）
+  if (ip !== String(row.ip || '')) {
+    const owner = terminalAt(ip);
+    if (owner) {
+      return {
+        ok: false,
+        error: 'IP ' + ip + ' 已被终端资产' + terminalLabel(owner.first)
+          + (owner.count > 1 ? '等 ' + owner.count + ' 台设备' : '') + ' 占用，不能再登记给别的设备。',
+        terminal_owner: owner.first,
+      };
+    }
+  }
   const mac = data.mac === undefined ? row.mac : trim(data.mac, 40);
   if (mac && !/^([0-9a-f]{2}[:-]){5}[0-9a-f]{2}$/i.test(mac.replace(/\s/g, ''))) {
     return { ok: false, error: 'MAC 地址格式不正确（应形如 00-1A-2B-3C-4D-5E）' };
@@ -594,12 +837,19 @@ function freeIpsOfSegment(segmentId, limit) {
   const c = parseCidr(seg.cidr);
   if (!c) return { ok: false, error: '该网段的 CIDR 无法解析：' + seg.cidr };
   const used = usedSetOf(seg.id);
+  // ★ 终端资产占着的地址也要算「已占」，否则这里会把一个其实已经被
+  //   门诊那台自助机用掉的地址推荐给新设备，装完就撞 IP
+  const terms = terminalIn(seg.cidr);
+  let extra = 0;
+  terms.forEach((t) => { if (!used.has(t.ip)) { used.add(t.ip); extra++; } });
   const list = freeIps(c, used, limit);
   return {
     ok: true,
     cidr: c.cidr,
     host_count: c.hostCount,
     registered: used.size,
+    terminal: terms.length,
+    terminal_only: extra,
     free_count: Math.max(0, c.hostCount - used.size),
     ips: list,
     truncated: list.length < Math.max(0, c.hostCount - used.size),
@@ -647,6 +897,10 @@ function segmentMap(segmentId, opts) {
     if (!byIp[k]) byIp[k] = r;
   });
 
+  // 终端资产占着的地址：手工登记优先，这里只补那些没手工登记的
+  const termByIp = {};
+  terminalIn(seg.cidr).forEach((t) => { if (!byIp[t.ip]) termByIp[t.ip] = t; });
+
   const info = shapeSegment(seg, segmentStats()[String(seg.id)]);
   const base = {
     ok: true,
@@ -658,6 +912,8 @@ function segmentMap(segmentId, opts) {
     registered: info.registered,
     used: info.used,
     conflict: info.conflict,
+    terminal: info.terminal,
+    terminal_only: info.terminal_only,
     free_count: info.free_count,
     truncated: Number(totalRows) > rows.length,
   };
@@ -674,6 +930,7 @@ function segmentMap(segmentId, opts) {
     for (;;) {
       const ip = formatIp(n);
       const rec = byIp[ip];
+      const term = termByIp[ip];
       const isEdge = c.prefix <= 30 && (n === c.network || n === c.broadcast);
       let state = 'free';
       let tip = ip + ' · 未登记';
@@ -684,12 +941,18 @@ function segmentMap(segmentId, opts) {
         if (rec.owner) tip += ' · ' + rec.owner;
         if (rec.device_type) tip += ' · ' + rec.device_type;
         if (rec.note) tip += ' · ' + rec.note;
+      } else if (term) {
+        // 终端资产里认领的地址：照样算「已使用」，点一下能跳到列表里看到是哪台机器
+        state = 'used';
+        tip = ip + ' · 终端资产' + terminalLabel(term);
+        if (term.hostname) tip += ' · ' + term.hostname;
+        if (term.mac) tip += ' · ' + term.mac;
       } else if (isEdge) {
         const edge = n === c.network ? '网络地址' : '广播地址';
         state = n === c.network ? 'net' : 'bcast';
         tip = ip + ' · ' + edge + '（不参与登记）';
       }
-      cells.push({ ip, label: String(n & 255), state, reg: !!rec, tip });
+      cells.push({ ip, label: String(n & 255), state, reg: !!(rec || term), terminal: !!term, tip });
       if (n === c.broadcast) break; // 先判后加，避免 0xFFFFFFFF 进位回绕成 0
       n = (n + 1) >>> 0;
     }
@@ -700,7 +963,7 @@ function segmentMap(segmentId, opts) {
   const blocks = Math.pow(2, 24 - c.prefix);
   if (blocks <= MAP_BLOCK_MAX) {
     const agg = [];
-    for (let i = 0; i < blocks; i++) agg.push({ registered: 0, used: 0, conflict: 0 });
+    for (let i = 0; i < blocks; i++) agg.push({ registered: 0, used: 0, conflict: 0, terminal: 0 });
     rows.forEach((r) => {
       const n = parseIp(r.ip);
       if (n === null) return;
@@ -710,26 +973,37 @@ function segmentMap(segmentId, opts) {
       if (r.status === 'used') agg[idx].used++;
       if (r.status === 'conflict') agg[idx].conflict++;
     });
+    // 终端资产的地址也算进这一块（这些 IP 在本网段还没手工登记过，不会重复计数）
+    Object.keys(termByIp).forEach((ip) => {
+      const n = parseIp(ip);
+      if (n === null) return;
+      const idx = Math.floor((n - c.network) / 256);
+      if (idx < 0 || idx >= blocks) return;
+      agg[idx].terminal++;
+    });
 
     // 块数多到格子放不下数字时就不写字，只留颜色（悬停仍有完整信息）
     const showCount = blocks <= 256;
     const cells = agg.map((a, i) => {
       const net = formatIp((c.network + i * 256) >>> 0);
       const cidr = net + '/24';
+      const occupied = a.registered + a.terminal;
       let state = 'free';
       if (a.conflict > 0) state = 'conflict';
-      else if (a.registered > 0) state = 'used';
+      else if (occupied > 0) state = 'used';
       let tip = cidr + ' · 已登记 ' + a.registered + ' / 256';
+      if (a.terminal) tip += '（另含终端资产 ' + a.terminal + ' 个）';
       if (a.used) tip += '（已使用 ' + a.used + '）';
       if (a.conflict) tip += ' · 冲突 ' + a.conflict;
       return {
         ip: cidr,
         // 格内写「这个 /24 里登记了几条」而不是第三段：块数一多，
         // 「哪一块在涨」比「这是哪一块」更值得一眼看到，后者交给悬停。
-        label: showCount ? String(a.registered) : '',
+        label: showCount ? String(occupied) : '',
         state,
-        reg: a.registered > 0,
+        reg: occupied > 0,
         registered: a.registered,
+        terminal: a.terminal,
         used: a.used,
         conflict: a.conflict,
         tip,
@@ -794,4 +1068,6 @@ module.exports = {
   listIps, createIp, updateIp, removeIp, freeIpsOfSegment, bulkCreate,
   segmentMap, MAP_IP_MAX, MAP_BLOCK_MAX, MAP_ROWS_MAX, MAP_COLS,
   shapeSegment, shapeRecord, ensureColumns,
+  // 与终端资产的联动（只读）：自测与路由都可能要用
+  terminalIps, terminalIn, terminalAt, shapeTerminalRecord,
 };

@@ -52,6 +52,9 @@
           <div class="bar bar-blue"></div>
           <div class="num">{{ summary.registered || 0 }}</div>
           <div class="lbl">已登记</div>
+          <!-- 终端资产那部分不落库、不算「登记」，但确实占了地址 —— 单独标出来，
+               否则用户会觉得「已登记 0 条，怎么剩余地址少了这么多」 -->
+          <div class="cell-sub" v-if="summary.terminal_only">+ 终端资产 {{ summary.terminal_only }}</div>
         </div>
         <div class="stat-card">
           <div class="bar bar-green"></div>
@@ -126,6 +129,9 @@
                     已登记 {{ s.registered }} · 剩余 {{ s.free_count }}
                     <template v-if="s.conflict"> · <b class="err-text">冲突 {{ s.conflict }}</b></template>
                   </span>
+                  <span class="cell-sub" v-if="s.terminal_only">
+                    其中 {{ s.terminal_only }} 个已被终端资产占用（未登记）
+                  </span>
                 </td>
                 <td class="ops">
                   <button class="btn btn-sm btn-outline" @click="openFree(s)">空闲地址</button>
@@ -154,6 +160,11 @@
           <select class="ipt" v-model="fStatus" @change="page = 1; loadIps()">
             <option value="">全部状态</option>
             <option v-for="st in statuses" :key="st.code" :value="st.code">{{ st.label }}</option>
+          </select>
+          <select class="ipt" v-model="fSource" @change="page = 1; loadIps()">
+            <option value="">全部来源</option>
+            <option value="manual">手工登记</option>
+            <option value="terminal">终端资产</option>
           </select>
           <input class="ipt grow" v-model="kw" placeholder="搜索 IP / 主机名 / 使用人 / MAC / 备注" @keyup.enter="page = 1; loadIps()">
           <button class="btn btn-outline" @click="page = 1; loadIps()">查询</button>
@@ -185,16 +196,29 @@
                 <tr v-for="r in ips" :key="r.id">
                   <td>
                     <span class="mono cell-strong">{{ r.ip }}</span>
+                    <!-- 来源标签贴在 IP 同一行：放第二行会把「网段名」挤到第三行，
+                         130px 的列宽装不下，看着像排版坏了 -->
+                    <span v-if="r.source === 'terminal'" class="chip chip-term">终端</span>
                     <span class="cell-sub">{{ segmentLabel(r.segment_id) }}</span>
                   </td>
                   <td><span class="dev-badge" :class="badgeOf(r.status)">{{ r.status_label }}</span></td>
-                  <td><span class="cell-strong">{{ r.hostname || '—' }}</span></td>
+                  <td>
+                    <span class="cell-strong">{{ r.hostname || '—' }}</span>
+                    <span class="cell-sub" v-if="r.hostname && r.device && r.device.name && r.hostname !== r.device.name">
+                      {{ r.device.name }}
+                    </span>
+                  </td>
                   <td><span class="cell-sub">{{ r.owner || '—' }}</span></td>
                   <td><span class="cell-sub">{{ r.device_type || '—' }}</span></td>
                   <td><span class="mono">{{ r.mac || '—' }}</span></td>
                   <td><span class="cell-sub">{{ r.note || '—' }}</span></td>
                   <td class="ops">
-                    <template v-if="canManage">
+                    <!-- 终端资产那条：只在终端资产里维护，这里不给编辑/删除，
+                         否则会出现「这边删了、那边还在」的两份数据 -->
+                    <template v-if="r.source === 'terminal'">
+                      <button class="btn btn-sm btn-outline" @click="openTerminal(r)">查看设备</button>
+                    </template>
+                    <template v-else-if="canManage">
                       <button class="btn btn-sm btn-outline" @click="openIpForm(r)">编辑</button>
                       <button class="btn btn-sm btn-outline btn-danger" @click="delIp(r)">删除</button>
                     </template>
@@ -205,7 +229,12 @@
               <tfoot v-if="ips.length">
                 <tr>
                   <td colspan="2">本页 {{ ips.length }} 条</td>
-                  <td colspan="6">全部 {{ ipTotal }} 条</td>
+                  <td colspan="6">
+                    全部 {{ ipTotal }} 条
+                    <span v-if="ipTermTotal" class="muted">
+                      （手工登记 {{ ipManualTotal }} · 终端资产 {{ ipTermTotal }}）
+                    </span>
+                  </td>
                 </tr>
               </tfoot>
             </table>
@@ -214,6 +243,12 @@
             登记时会校验：地址格式 → 是否属于所选网段 → 同一网段内是否已登记。
             同一地址若同时落在另一个网段内，会给出提示但不拦截。
           </div>
+          <div class="hint" v-if="ipTermTotal">
+            标了「终端」的这些行来自【终端资产】台账，是<b>自动同步</b>过来的，不会写进本页的登记表 ——
+            设备改了 IP、报废或删除，这里立刻跟着变。也因此不需要再手工登记一遍（会被拒绝并提示是哪台设备）。
+            要让某个地址释放出来，请到终端资产把那台设备的 IP 清掉或状态改成「报废」。
+          </div>
+          <div class="hint" v-if="mergeNote">{{ mergeNote }}</div>
         </div>
 
         <div class="pager" v-if="ipTotal > pageSize">
@@ -248,6 +283,7 @@
             <span class="ipmap-key"><i class="k-conflict"></i>冲突</span>
             <span class="ipmap-key"><i class="k-net"></i>网络 / 广播地址</span>
           </div>
+          <div class="hint">「已使用」里包含【终端资产】里登记了 IP 的设备 —— 那些地址没写进本页的登记表，但确实被占着，悬停能看到是哪台机器。</div>
         </div>
 
         <div v-if="loadingMap" class="card muted">正在生成地址分布…</div>
@@ -262,6 +298,7 @@
             <span class="muted">
               {{ m.mode === 'ip' ? '逐地址' : (m.mode === 'block' ? '按 /24 聚合' : '仅统计') }} ·
               可用 {{ m.host_count }} · 已登记 {{ m.registered }} · 剩余 {{ m.free_count }}
+              <template v-if="m.terminal_only"> · 终端 {{ m.terminal_only }}</template>
               <template v-if="m.conflict"> · <b class="err-text">冲突 {{ m.conflict }}</b></template>
             </span>
           </div>
@@ -277,10 +314,10 @@
             <div class="hint">
               <template v-if="m.mode === 'ip'">
                 每格一个地址，格内数字是该 IPv4 的最后一段（.0 / .16 / .32 正好是每行开头）。
-                有底色的格子表示已登记，点一下可跳到「IP 登记」查它的归属。
+                有底色的格子表示已被占用（含终端资产占的），点一下可跳到「IP 登记」查它的归属。
               </template>
               <template v-else>
-                每格一个 /24，格内数字是该 /24 里已登记的条数（格子太小时不显示数字）。
+                每格一个 /24，格内数字是该 /24 里已占用的个数（含终端资产，格子太小时不显示数字）。
                 鼠标停上去能看到具体是哪一段。
               </template>
               <template v-if="m.truncated"> · 该网段登记条数超过单次读取上限，图中没有画全。</template>
@@ -476,6 +513,10 @@
             </div>
             <div v-else class="muted">该网段已没有未登记的地址。</div>
             <div class="hint" v-if="freeView.truncated">列表只显示前 {{ freeView.ips.length }} 个（按地址顺序）。</div>
+            <div class="hint" v-if="freeView.terminal">
+              已扣除 {{ freeView.terminal }} 个被【终端资产】占用的地址
+              （其中 {{ freeView.terminal_only }} 个没有手工登记过）—— 这些地址分配出去会撞 IP。
+            </div>
           </div>
           <div class="modal-foot">
             <button class="btn btn-outline" @click="freeView = null">关闭</button>
@@ -490,6 +531,9 @@
         segs: [], summary: {}, statuses: [],
         ips: [], ipTotal: 0, page: 1, pageSize: 100,
         fSeg: 0, fStatus: '', kw: '',
+        // 来源：'' = 全部（手工登记 + 终端资产）；'manual' / 'terminal'
+        fSource: '',
+        ipManualTotal: 0, ipTermTotal: 0, mergeNote: '',
         // 地址分布图：每个网段一份，由后端算好格子
         maps: [],
         loadingSeg: false, loadingIp: false, loadingMap: false, saving: false,
@@ -537,11 +581,15 @@
         try {
           const q = '?segment_id=' + (this.fSeg || 0)
             + '&status=' + encodeURIComponent(this.fStatus || '')
+            + '&source=' + encodeURIComponent(this.fSource || '')
             + '&keyword=' + encodeURIComponent(this.kw || '')
             + '&page=' + this.page + '&pageSize=' + this.pageSize;
           const d = await api.get('/ipam/ips' + q);
           this.ips = (d && d.list) || [];
           this.ipTotal = (d && d.total) || 0;
+          this.ipManualTotal = (d && d.manual_total) || 0;
+          this.ipTermTotal = (d && d.terminal_total) || 0;
+          this.mergeNote = (d && d.merge_note) || '';
           if (d && d.statuses && d.statuses.length) this.statuses = d.statuses;
         } catch (e) {
           this.$toast(e.message, 'err');
@@ -550,12 +598,38 @@
         }
       },
       goto(p) { this.page = Math.min(Math.max(1, p), this.pageCount); this.loadIps(); },
-      resetIp() { this.fSeg = 0; this.fStatus = ''; this.kw = ''; this.page = 1; this.loadIps(); },
+      resetIp() {
+        this.fSeg = 0; this.fStatus = ''; this.kw = ''; this.fSource = '';
+        this.page = 1; this.loadIps();
+      },
+
+      /**
+       * 跳到【终端资产】并打开这台设备的详情。
+       * hash 路由带不了参数（`#/terminals?id=3` 会被当成视图名的一部分），
+       * 所以用 sessionStorage 带一次性值，那边 mounted 读一次就删。
+       */
+      openTerminal(r) {
+        const id = (r && (r.terminal_id || (r.device && r.device.id))) || 0;
+        if (!id) return;
+        try { sessionStorage.setItem('his_terminal_open', String(id)); } catch (e) { /* 隐私模式忽略 */ }
+        if (window.location.hash === '#/terminals') {
+          // 已经在终端资产页时改 hash 不会触发重新挂载，直接派发一次事件让那边自己刷新
+          window.dispatchEvent(new CustomEvent('his:open-terminal', { detail: Number(id) }));
+        } else {
+          window.location.hash = '#/terminals';
+        }
+      },
 
       /* ---------- 展示辅助 ---------- */
+      /**
+       * 使用率 = 真被占了多少地址 / 可用地址数。
+       * ★ 必须把终端资产占的算进去：否则会出现「进度条 0%、剩余 254，点开空闲地址
+       *   却少了一大截」的自相矛盾 —— 用户会以为空闲地址算错了。
+       */
       pct(s) {
         if (!s || !s.host_count) return '0.0';
-        return Math.round(s.used / s.host_count * 1000) / 10;
+        const occupied = (s.used || 0) + (s.terminal_only || 0);
+        return Math.round(occupied / s.host_count * 1000) / 10;
       },
       usageStyle(s) {
         const p = Number(this.pct(s));
@@ -570,6 +644,7 @@
       },
       badgeOf(status) { return STATUS_BADGE[status] || 'muted'; },
       segmentLabel(id) {
+        if (!id) return '不在已登记网段';
         const s = this.segs.filter((x) => x.id === id)[0];
         return s ? s.name + '（' + s.cidr + '）' : '网段 #' + id;
       },
