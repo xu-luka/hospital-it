@@ -212,8 +212,12 @@
           <div class="modal-head">{{ form.id ? '编辑设备' : '新增设备' }}<span class="modal-close" @click="tryCloseForm">✕</span></div>
           <div class="modal-body">
             <div class="form-row">
-              <div class="form-item"><label>设备名称 *</label>
-                <input class="ipt" v-model="form.name" placeholder="写清位置，如「门诊3号诊室工作站」"></div>
+              <div class="form-item" :class="{ 'is-bad': badField === 'name' }">
+                <label>设备名称 *</label>
+                <input class="ipt" v-model="form.name" @input="badField = ''"
+                       placeholder="写清位置，如「门诊3号诊室工作站」">
+                <div class="field-err" v-if="badField === 'name'">必填：写清位置，以后报修时才认得出是哪台</div>
+              </div>
               <div class="form-item"><label>资产号</label>
                 <input class="ipt" v-model="form.asset_no" placeholder="贴机器上那张资产标签"></div>
             </div>
@@ -267,6 +271,10 @@
         stats: { total: 0, in_use: 0, repairing: 0, scrapped: 0, expired: 0, soon: 0, no_warranty: 0 },
         metaKinds: [], metaStatuses: [], deptOptions: [],
         loading: false, detail: null, form: null, formBase: '', saving: false,
+        // 必填项没填时把字段本身标红并滚到眼前。
+        // 只靠右上角 toast 是不够的：名称在弹窗最上方，用户填完底下的字段再点保存，
+        // 视线在右下角的按钮上，顶部一闪而过的提示经常被当成「按钮坏了」。
+        badField: '',
       };
     },
     computed: {
@@ -352,6 +360,7 @@
       },
 
       openForm(r) {
+        this.badField = '';
         const blank = {
           id: 0, asset_no: '', name: '', kind: 'PC', brand: '', model: '', sn: '', mac: '', ip: '',
           department: (this.fDept || ''), location: '', owner: '', status: '在用',
@@ -372,7 +381,20 @@
         this.form = null;
       },
       async save() {
-        if (!this.form.name.trim()) return this.$toast('请填写设备名称', 'err');
+        const name = (this.form.name || '').trim();
+        if (!name) {
+          this.badField = 'name';
+          this.$toast('请填写设备名称', 'err');
+          // 字段在弹窗最上方，用户很可能已经滚到底部按的保存 —— 滚回去 + 聚焦
+          this.$nextTick(() => {
+            const el = document.querySelector('.modal .form-item.is-bad .ipt');
+            if (!el) return;
+            if (el.scrollIntoView) el.scrollIntoView({ block: 'center' });
+            try { el.focus({ preventScroll: true }); } catch (e) { el.focus(); }
+          });
+          return;
+        }
+        this.badField = '';
         this.saving = true;
         try {
           const body = {};

@@ -3372,3 +3372,19 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-base); }
 .term-table .c-dept { width: 154px; }
 .term-table .c-warranty { width: 120px; }
 .term-table .c-ops { width: 168px; }
+
+/* 必填项没填就地标红（第十二节）。
+   为什么不用单纯 toast：名称在弹窗最上方，用户滚到最底部按保存，视线在右下角，
+   顶部一闪而过的提示会被当成「按钮没反应」。字段变红 + 自动滚回去，才是明确指向。 */
+.form-item.is-bad .ipt {
+  border-color: var(--bad);
+  background: var(--bad-soft);
+  box-shadow: 0 0 0 3px var(--bad-soft);
+}
+.form-item.is-bad label { color: var(--bad); }
+.field-err {
+  margin-top: 6px;
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  color: var(--bad);
+}

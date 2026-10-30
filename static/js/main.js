@@ -295,6 +295,9 @@
       </div>
     </div>`,
 
+    // 根组件先于所有子组件创建，在这里登记自己，$toast 才有地方投递
+    created() { rootVm = this; },
+
     data() {
       return {
         toasts: [],
@@ -655,8 +658,15 @@
   const app = Vue.createApp(App);
   app.config.globalProperties.$api = api;
   app.config.globalProperties.$route = routeState;
+  // ★ 不要用 app._instance 去拿根组件：vue.global.prod.js 里 app._instance 只在
+  //   `__DEV__ || __FEATURE_PROD_DEVTOOLS__` 分支赋值，**生产构建永远是 undefined**，
+  //   于是 $toast 变成静默空操作 —— 全站每一个 this.$toast(...) 都不显示任何东西。
+  //   2026-10-30 用户报「点保存没反应」就是它：保存被必填校验拦住、提示却吐不出来。
+  //   改成在根组件 created 时把自己记下来（created 早于所有子组件，不会漏）。
+  let rootVm = null;
   app.config.globalProperties.$toast = function (msg, type) {
-    if (app._instance) app._instance.proxy.toast(msg, type);
+    if (rootVm && rootVm.toast) rootVm.toast(msg, type);
+    else console.warn('[toast] 根组件未就绪，提示被丢弃：' + msg);
   };
 
   // 全局工具函数（模板经运行时编译不继承闭包作用域，须注册为全局方法）
