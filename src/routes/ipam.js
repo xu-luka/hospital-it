@@ -114,14 +114,16 @@ router.get('/segments/:id/map', (req, res) => {
 
 /* ==================== IP 登记 ==================== */
 
-// GET /api/ipam/ips —— 登记列表（网段 / 状态 / 关键词 / 来源 / 分页）
+// GET /api/ipam/ips —— 登记列表（网段 / 状态 / 关键词 / 精确地址 / 来源 / 分页）
 // source=all（默认，手工登记 + 终端资产）｜manual｜terminal
+// ip=200.100.10.23 —— 精确地址（点地址分布图的格子时传），与 keyword 互斥且优先
 router.get('/ips', (req, res) => {
   try {
     res.json({ code: 0, data: repo.listIps({
       segment_id: req.query.segment_id,
       status: req.query.status,
       keyword: req.query.keyword,
+      ip: req.query.ip,
       source: req.query.source,
       page: req.query.page,
       pageSize: req.query.pageSize,

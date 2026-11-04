@@ -670,6 +670,8 @@ const MERGE_MAX = 5000;
 
 /**
  * 登记列表。source: all（默认）/ manual / terminal。
+ * ip: 精确地址（点【地址分布图】的格子时传），与 keyword 互斥且优先。
+ *     两者共用一套 where / 终端筛选，所以 manual、terminal、合并三条分支行为一致。
  *
  * ★ 为什么改成「取全量 → 内存合并 → 切片」：
  *   终端资产的 IP 存在另一个库（his.db），SQL 里 JOIN 不了；
@@ -686,11 +688,19 @@ function listIps(opts) {
   const page = Math.max(1, Number(o.page) || 1);
   const pageSize = Math.min(500, Math.max(1, Number(o.pageSize) || 100));
 
+  /* 精确地址：点【地址分布图】的格子进来时带的值。
+     ★ 不能用 keyword 兼任 —— 那是 LIKE '%x%'，查 200.100.10.23 会把 .230/.231/.232 一起带出来，
+       用户点的是某一格，却看到 4 条，结论就是「点不准」。
+     精确与关键词互斥（选中格子的同时会把搜索框填成同一个地址，两者同时生效必然只剩 1 条，
+     但 SQL 上写两个条件容易让人以为能叠加，所以这里明确取一）：exactIp 优先。 */
+  const exactIp = trim(o.ip);
   const where = [];
   const params = [];
   if (segId) { where.push('r.segment_id = ?'); params.push(segId); }
   if (status && STATUS_CODES.indexOf(status) >= 0) { where.push('r.status = ?'); params.push(status); }
-  if (kw) {
+  if (exactIp) {
+    where.push('r.ip = ?'); params.push(exactIp);
+  } else if (kw) {
     const lk = '%' + kw + '%';
     where.push('(r.ip LIKE ? OR r.hostname LIKE ? OR r.owner LIKE ? OR r.mac LIKE ? OR r.note LIKE ? OR r.device_type LIKE ?)');
     params.push(lk, lk, lk, lk, lk, lk);
@@ -728,7 +738,9 @@ function listIps(opts) {
   const segs = db.prepare('SELECT * FROM net_segments ORDER BY id ASC').all();
   const terms = terminalIps()
     .filter((t) => {
-      if (!terminalMatch(t, kw)) return false;
+      // 精确模式只认「这一行代表的那个地址」严格相等；外网行本身就是外网地址，自然命中
+      if (exactIp) { if (t.ip !== exactIp) return false; }
+      else if (!terminalMatch(t, kw)) return false;
       if (segId) {
         const s = segmentOfIp(t.ip, segs);
         if (!s || Number(s.id) !== segId) return false;

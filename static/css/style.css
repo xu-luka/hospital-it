@@ -3085,6 +3085,27 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-base); }
 .ip-table.ip-reg .c-note  { width: 188px; }
 .ip-table.ip-reg .c-ops   { width: 188px; }
 
+/* 精确地址提示条（2026-11-04）：从【地址分布图】点格子跳过来时出现。
+   ★ 必须有：搜索框里显示的就是这个地址，但背后走的是 ip = ? 而不是 LIKE '%x%'。
+     不给提示，用户按老经验点「查询」会以为「怎么只剩一条了 / 查询坏了」。
+   用 accent 色系（与「当前选中」同一语义），不用 warn/bad —— 这不是异常。 */
+.exact-tip {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 0 0 12px;
+  padding: 7px 12px;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
+  border-radius: var(--r);
+}
+.exact-tip b { color: var(--accent); font-weight: 600; }
+.exact-tip a { color: var(--accent); cursor: pointer; }
+.exact-tip a:hover { text-decoration: underline; }
+
 /* 来源标记：这一行来自【终端资产】台账（只读同步，不是本页登记的）。
    用 info 蓝跟「已使用」同一个色系，不再引入新颜色 —— 地图上的「已使用」格同理。 */
 .chip-term {

@@ -37,6 +37,9 @@ function ok(name, cond, extra) {
 function eq(name, a, b) { ok(name + ' = ' + JSON.stringify(b), JSON.stringify(a) === JSON.stringify(b), a); }
 
 const SEG_CIDR = '10.99.30.0/28';
+/* 精确查询那组用例要一对「一个地址是另一个地址的前缀」的样本（.23 / .230 / .231），
+   /28 里排不下，所以另开一个 /24。清理时两个段一起删。 */
+const SEG2_CIDR = '10.99.32.0/24';
 const T_IP1 = '10.99.30.3';
 const T_IP2 = '10.99.30.4';
 const T_IP3 = '10.99.30.5';
@@ -44,6 +47,7 @@ const T_OUT = '10.99.31.3';
 
 const madeTerms = [];
 let segId = 0;
+let seg2Id = 0;
 
 /**
  * 造一台终端。名字（展示名）来自「工作组/计算机名」，所以 hostname 一定给出来 ——
@@ -65,12 +69,15 @@ function cleanup() {
     madeTerms.forEach((id) => term.remove(id));
   } catch (e) { /* 忽略 */ }
   try {
-    if (segId) {
-      db.prepare('DELETE FROM ip_records WHERE segment_id = ?').run(segId);
-      db.prepare('DELETE FROM net_segments WHERE id = ?').run(segId);
-    }
+    [segId, seg2Id].forEach((id) => {
+      if (!id) return;
+      db.prepare('DELETE FROM ip_records WHERE segment_id = ?').run(id);
+      db.prepare('DELETE FROM net_segments WHERE id = ?').run(id);
+    });
     // 兜底：万一中途换了 id
-    db.prepare('DELETE FROM net_segments WHERE cidr = ?').run(SEG_CIDR);
+    [SEG_CIDR, SEG2_CIDR].forEach((c) => {
+      db.prepare('DELETE FROM net_segments WHERE cidr = ?').run(c);
+    });
   } catch (e) { /* 忽略 */ }
 }
 
@@ -78,11 +85,12 @@ try {
   console.log('== 准备数据 ==');
   // 先把同名测试网段/设备清掉，避免上次中断留下的脏数据干扰
   try {
-    const old = db.prepare('SELECT id FROM net_segments WHERE cidr = ?').get(SEG_CIDR);
-    if (old) {
-      db.prepare('DELETE FROM ip_records WHERE segment_id = ?').run(old.id);
-      db.prepare('DELETE FROM net_segments WHERE id = ?').run(old.id);
-    }
+    const olds = db.prepare('SELECT id FROM net_segments WHERE cidr IN (?, ?)')
+      .all(SEG_CIDR, SEG2_CIDR);
+    olds.forEach((o) => {
+      db.prepare('DELETE FROM ip_records WHERE segment_id = ?').run(o.id);
+      db.prepare('DELETE FROM net_segments WHERE id = ?').run(o.id);
+    });
   } catch (e) { /* 忽略 */ }
 
   const s = ipam.createSegment({ name: '自测网段', cidr: SEG_CIDR, gateway: '10.99.30.1' });
@@ -272,6 +280,48 @@ try {
   const kwIn = ipam.listIps({ pageSize: 200, keyword: T_BO }).list;
   eq('搜外网地址只命中外网那一行（不会内外各出一行）',
     kwIn.filter((r) => r.ip === T_BO).length, 1);
+
+  /* ---------------- ⑥ 点分布图的格子要「精准」 ----------------
+   * 用户报的现象：在【地址分布图】点 .23 那一格，跳过去列出 .230 / .231 / .232 / .234 四条。
+   * 原因是跳转时只把地址塞进 keyword，后端走 LIKE '%10.99.32.23%'。
+   * 现在跳转改传 ip=（精确），keyword 那条老行为保留不动 —— 两条都要钉住，
+   * 否则以后有人「顺手统一一下」，界面又会退回模糊。 */
+  console.log('\n== ⑥ 精确地址查询（点分布图格子） ==');
+  const s2 = ipam.createSegment({ name: '自测精确段', cidr: SEG2_CIDR, gateway: '10.99.32.1' });
+  ok('建 /24 精确段', s2.ok, s2.error || s2.cidr);
+  seg2Id = s2.id;
+  mkTerm({ hostname: 'ZS-EXACT-23', ip: '10.99.32.23', department: '急诊科', location: '急诊楼1层' });
+  mkTerm({ hostname: 'ZS-EXACT-230', ip: '10.99.32.230', department: '急诊科', location: '急诊楼1层' });
+  mkTerm({ hostname: 'ZS-EXACT-231', ip: '10.99.32.231', department: '急诊科', location: '急诊楼1层' });
+  ipam.createIp({ segment_id: seg2Id, ip: '10.99.32.50', hostname: '手工-50' });
+
+  const fuzzy = ipam.listIps({ segment_id: seg2Id, pageSize: 50, keyword: '10.99.32.23' });
+  eq('反证：keyword 仍是模糊，点 .23 会连带 .230 / .231（就是用户看到的那一幕）',
+    fuzzy.list.map((r) => r.ip), ['10.99.32.23', '10.99.32.230', '10.99.32.231']);
+
+  const exactTerm = ipam.listIps({ segment_id: seg2Id, pageSize: 50, ip: '10.99.32.23' });
+  eq('ip= 精确匹配：只剩 .23 这一条', exactTerm.list.map((r) => r.ip), ['10.99.32.23']);
+  eq('total 也按精确口径算（分页器不能显示 3）', exactTerm.total, 1);
+  eq('命中的是终端记录（来源 terminal）', exactTerm.list[0] && exactTerm.list[0].source, 'terminal');
+
+  const exactManual = ipam.listIps({ segment_id: seg2Id, pageSize: 50, ip: '10.99.32.50' });
+  eq('手工登记的地址同样只出一条', exactManual.list.map((r) => r.ip), ['10.99.32.50']);
+  eq('来源标 manual', exactManual.list[0] && exactManual.list[0].source, 'manual');
+
+  const exactBoth = ipam.listIps({
+    segment_id: seg2Id, pageSize: 50, ip: '10.99.32.230', keyword: '10.99.32.23',
+  });
+  eq('ip 与 keyword 同时给 → 精确优先（不会又变回 3 条）',
+    exactBoth.list.map((r) => r.ip), ['10.99.32.230']);
+
+  eq('ip= 查一个没被占的地址 → 0 条（界面据此提示「可直接登记」）',
+    ipam.listIps({ segment_id: seg2Id, pageSize: 50, ip: '10.99.32.24' }).total, 0);
+
+  // 跳转还会带上网段；但「不带网段也能精确命中」要成立 —— 否则地址落在别的段
+  // （终端 IP 跨段、或格子所属网段和登记网段不一致）时，点进去就是空列表。
+  const exactNoSeg = ipam.listIps({ pageSize: 50, ip: '10.99.32.230' });
+  eq('不带网段筛选时，精确地址也能直接命中（跨段点格子不会落空）',
+    exactNoSeg.list.map((r) => r.ip), ['10.99.32.230']);
 } catch (e) {
   fail++;
   console.log('\n[异常] ' + (e && e.stack ? e.stack : e));

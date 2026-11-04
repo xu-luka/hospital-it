@@ -166,9 +166,19 @@
             <option value="manual">手工登记</option>
             <option value="terminal">终端资产</option>
           </select>
-          <input class="ipt grow" v-model="kw" placeholder="搜索 IP / 主机名 / 使用人 / MAC / 备注" @keyup.enter="page = 1; loadIps()">
+          <!-- 一旦手动改搜索词，就要退出「精确地址」模式：否则用户在框里改成 .30，
+               结果还是那一条 .23，看着像查询失灵。@input 一定不能省。 -->
+          <input class="ipt grow" v-model="kw" placeholder="搜索 IP / 主机名 / 使用人 / MAC / 备注"
+                 @input="fIp = ''" @keyup.enter="page = 1; loadIps()">
           <button class="btn btn-outline" @click="page = 1; loadIps()">查询</button>
           <button class="btn btn-outline" @click="resetIp">重置</button>
+        </div>
+
+        <!-- 点【地址分布图】的格子进来时走的是精确匹配（后端 ip= 参数），搜索框里显示的
+             也是同一个地址。不给这行说明，用户会以为是关键词查询、疑惑「为什么只有 1 条」。 -->
+        <div class="exact-tip" v-if="fIp">
+          <span>已锁定地址 <b class="mono">{{ fIp }}</b> 精确匹配（不会再带出 .230 / .231 这类相近地址）</span>
+          <a @click="clearExact">改用模糊搜索</a>
         </div>
 
         <div class="card card-flush">
@@ -190,7 +200,13 @@
                 <tr v-if="loadingIp"><td colspan="8" class="empty-row">加载中…</td></tr>
                 <tr v-else-if="!ips.length">
                   <td colspan="8" class="empty-row">
-                    没有匹配的登记。{{ canManage && segs.length ? '可点右上角「登记 IP」或「批量登记」。' : '' }}
+                    <template v-if="fIp">
+                      地址 <span class="mono">{{ fIp }}</span> 没有任何登记记录（终端资产里也没有这个地址）。
+                      {{ canManage ? '可以直接点右上角「登记 IP」把它登记下来。' : '' }}
+                    </template>
+                    <template v-else>
+                      没有匹配的登记。{{ canManage && segs.length ? '可点右上角「登记 IP」或「批量登记」。' : '' }}
+                    </template>
                   </td>
                 </tr>
                 <tr v-for="r in ips" :key="r.id">
@@ -553,6 +569,9 @@
         segs: [], summary: {}, statuses: [],
         ips: [], ipTotal: 0, page: 1, pageSize: 100,
         fSeg: 0, fStatus: '', kw: '',
+        // 精确地址（点分布图格子时置位）。与 kw 互斥：非空时后端按 ip = ? 查，
+        // 不再走 LIKE '%kw%'，否则点 200.100.10.23 会把 .230/.231 全带出来。
+        fIp: '',
         // 来源：'' = 全部（手工登记 + 终端资产）；'manual' / 'terminal'
         fSource: '',
         ipManualTotal: 0, ipTermTotal: 0, mergeNote: '',
@@ -604,7 +623,8 @@
           const q = '?segment_id=' + (this.fSeg || 0)
             + '&status=' + encodeURIComponent(this.fStatus || '')
             + '&source=' + encodeURIComponent(this.fSource || '')
-            + '&keyword=' + encodeURIComponent(this.kw || '')
+            + '&keyword=' + encodeURIComponent(this.fIp ? '' : (this.kw || ''))
+            + '&ip=' + encodeURIComponent(this.fIp || '')
             + '&page=' + this.page + '&pageSize=' + this.pageSize;
           const d = await api.get('/ipam/ips' + q);
           this.ips = (d && d.list) || [];
@@ -621,8 +641,15 @@
       },
       goto(p) { this.page = Math.min(Math.max(1, p), this.pageCount); this.loadIps(); },
       resetIp() {
-        this.fSeg = 0; this.fStatus = ''; this.kw = ''; this.fSource = '';
+        this.fSeg = 0; this.fStatus = ''; this.kw = ''; this.fSource = ''; this.fIp = '';
         this.page = 1; this.loadIps();
+      },
+      /** 退出精确模式：保留搜索框里的地址，退回模糊查询（同一个地址仍然能找到，
+          只是会连 .230/.231 一起列出来）。 */
+      clearExact() {
+        this.fIp = '';
+        this.page = 1;
+        this.loadIps();
       },
 
       /**
@@ -721,11 +748,21 @@
         this.tab = 'ip';
         this.fSeg = m.id;
         this.fStatus = '';
+        // 来源筛选也要归零：点的是「这个地址」，若还挂着「只看手工登记」，
+        // 恰好这个地址属于终端资产，就会显示「没有匹配的登记」。
+        this.fSource = '';
         this.page = 1;
-        // 聚合成 /24 的时候格子的 key 是个网段，直接用「前三段.」做模糊匹配更准
-        this.kw = m.mode === 'block'
-          ? c.ip.split('/')[0].split('.').slice(0, 3).join('.') + '.'
-          : c.ip;
+        if (m.mode === 'block') {
+          // 聚合成 /24 时格子 key 是个网段，没有单一地址可精确匹配，
+          // 只能用「前三段.」做前缀模糊匹配（这是本模块唯一该走 LIKE 的地方）
+          this.kw = c.ip.split('/')[0].split('.').slice(0, 3).join('.') + '.';
+          this.fIp = '';
+        } else {
+          // 逐地址模式：**精确**匹配这一个地址。
+          // 原来这里只把地址塞进 kw，后端走 LIKE '%x%' → 点 .23 会列出 .230/.231/.232/.234。
+          this.kw = c.ip;
+          this.fIp = c.ip;
+        }
         this.loadIps();
       },
 
@@ -734,6 +771,7 @@
         this.fSeg = s.id;
         this.fStatus = '';
         this.kw = '';
+        this.fIp = '';
         this.page = 1;
         this.loadIps();
       },
