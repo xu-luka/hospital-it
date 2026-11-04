@@ -62,6 +62,9 @@ const MODULES = [
   // 终端资产台账：PC / 打印机 / 自助机这类「连不上也管不了」的设备。
   // 与下面【机房巡检】的「设备台账」不是一回事 —— 那个是能 WMI/SSH 采集的服务器与网络设备。
   { code: 'terminals', name: '终端资产', group: '资源管理', acts: ['view', 'manage'] },
+  // 新系统上线管理：哪个系统什么时候上线、厂商是谁、试运行到哪一步。
+  // 全员可看（view 是最低档），改状态 / 勾任务 / 增删改都是 manage。
+  { code: 'launches', name: '上线管理', group: '系统上线', acts: ['view', 'manage'] },
   { code: 'screen', name: '监控大屏', group: '机房巡检', acts: ['view'] },
   { code: 'devices', name: '设备台账', group: '机房巡检', acts: ['view', 'manage'] },
   { code: 'inspection', name: '巡检报告', group: '机房巡检', acts: ['view', 'manage'] },
@@ -115,6 +118,7 @@ const OPERATOR_PERMS = [
   // 终端台账默认给到「管理」：工程师每天都要登记新装机器、改位置、办报废，
   // 若只给查看，实际上等于没人能录，台账很快就空着不用了。
   'terminals.view', 'terminals.manage',
+  'launches.view', 'launches.manage',
   'screen.view',
   // 设备台账刻意只给查看：改造前只有管理员能新增/编辑设备、测试连接，
   // 这里保持原样，需要时管理员在权限页勾上即可（避免"升级完工程师权限变大了"）
@@ -128,8 +132,9 @@ const DEFAULT_ROLE_PERMS = {
   admin: ['*'],
   engineer: OPERATOR_PERMS,
   approver: OPERATOR_PERMS,
-  // 普通用户 = 报障人：能进工作台、能提交和查看工单，其余模块不进菜单
-  user: ['dashboard.view', 'issues.view', 'issues.create'],
+  // 普通用户 = 报障人：能进工作台、能提交和查看工单，其余模块不进菜单。
+  // 上线管理例外地给 view：哪个系统什么时候上线是全科都该知道的事（2026-11-04 产品决定）。
+  user: ['dashboard.view', 'issues.view', 'issues.create', 'launches.view'],
 };
 
 function actLabel(mod, act) {

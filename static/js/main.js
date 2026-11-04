@@ -34,6 +34,8 @@
     globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.3 2.4 3.4 5.5 3.4 9S14.3 18.6 12 21c-2.3-2.4-3.4-5.5-3.4-9S9.7 5.4 12 3z"/>',
     activity: '<path d="M3 12h4l3-7 4 14 3-7h4"/>',
     users: '<circle cx="9" cy="7.5" r="3.5"/><path d="M2.5 20v-1.2a4.5 4.5 0 0 1 4.5-4.5h4a4.5 4.5 0 0 1 4.5 4.5V20"/><path d="M17 4.6a3.5 3.5 0 0 1 0 6.6"/><path d="M18.8 20v-1.2a4.5 4.5 0 0 0-1.9-3.7"/>',
+    // 上线（新系统上线管理）：向上的箭头 + 底座，比「一张表」更能表达「要上了」
+    rocket: '<path d="M12 3.2c3.4 1.7 5.4 5 5.4 8.8l-2.7 3.3H9.3L6.6 12C6.6 8.2 8.6 4.9 12 3.2z"/><circle cx="12" cy="9.4" r="1.7"/><path d="M9.3 15.3 7.2 20l3.2-1.4M14.7 15.3 16.8 20l-3.2-1.4"/>',
     key: '<circle cx="8" cy="12" r="4"/><path d="M12 12h9"/><path d="M18 12v3M15.2 12v2.4"/>',
     list: '<path d="M8 6h13M8 12h13M8 18h13"/><path d="M3.5 6h.01M3.5 12h.01M3.5 18h.01"/>',
     lock: '<rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/><path d="M12 14.5v2"/>',
@@ -70,6 +72,10 @@
       { path: 'issues', icon: 'inbox', label: '问题记录', perm: 'issues.view', activeAlso: ['issue'] },
       { path: 'issue/new', icon: 'plus', label: '新建问题', perm: 'issues.create', activePath: 'issue', activeId: 'new' },
     ] },
+    // 新系统上线：全员可看（哪个系统什么时候上线，全科都该知道），改状态/勾任务要 manage
+    { title: '系统上线', items: [
+      { path: 'launches', icon: 'rocket', label: '上线管理', perm: 'launches.view' },
+    ] },
     { title: '技术文档库', items: [
       { path: 'docs', icon: 'book', label: '技术文档', perm: 'docs.view' },
     ] },
@@ -103,6 +109,7 @@
     bookmarks: 'bookmarks.view',
     ipam: 'ipam.view',
     terminals: 'terminals.view',
+    launches: 'launches.view',
     bigscreen: 'screen.view',
     devices: 'devices.view',
     reports: 'inspection.view',
@@ -124,6 +131,7 @@
     bookmarks: '网页书签',
     ipam: 'IP 管理',
     terminals: '终端资产',
+    launches: '上线管理',
     bigscreen: '监控大屏',
     devices: '设备台账',
     reports: '巡检报告',
@@ -398,6 +406,8 @@
         if (p === 'ipam') return 'ipam-view';
         // 终端资产：TerminalView → terminal-view ✓（camelize 得 terminalView，capitalize 得 TerminalView）
         if (p === 'terminals') return 'terminal-view';
+        // 上线管理：LaunchView → launch-view ✓
+        if (p === 'launches') return 'launch-view';
         return 'dashboard-view';
       },
     },
@@ -724,11 +734,11 @@
   }
   // 资源管理：网页书签 + IP 管理 + 终端资产。同样禁止「有就注册、没有静默跳过」——
   // 少一个文件时页面会整块空白，而 prod 构建不会有任何提示。
-  ['BookmarkView', 'IpamView', 'TerminalView'].forEach((n) => {
+  ['BookmarkView', 'IpamView', 'TerminalView', 'LaunchView'].forEach((n) => {
     if (V[n]) {
       app.component(n, V[n]);
     } else {
-      console.error('[main.js] 资源管理组件缺失，未注册：' + n + '（对应页面会显示空白）');
+      console.error('[main.js] 资源管理 / 上线管理组件缺失，未注册：' + n + '（对应页面会显示空白）');
     }
   });
 

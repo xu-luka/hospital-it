@@ -76,6 +76,13 @@ try {
 } catch (e) {
   console.warn('>>> 终端台账模块装载失败（忽略，其余功能正常）：' + ((e && e.message) || e));
 }
+// 新系统上线管理（台账 + 阶段任务清单 + 状态流转）。
+// 同样单独包一层 try/catch：文件没同步替换全时只下线本模块，不拖垮工单、合同。
+try {
+  app.use('/api/launches', require('./src/routes/launches'));
+} catch (e) {
+  console.warn('>>> 上线管理模块装载失败（忽略，其余功能正常）：' + ((e && e.message) || e));
+}
 // 问题记录 Excel 导入导出
 app.use('/api/excel-issues', require('./src/routes/excel-issues'));
 // 机房设备巡检（大屏 / 报告 / 触发 / 重载）

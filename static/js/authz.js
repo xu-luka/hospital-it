@@ -32,11 +32,12 @@
       'bookmarks.view', 'bookmarks.manage', 'bookmarks.secret',
       'ipam.view', 'ipam.manage',
       'terminals.view', 'terminals.manage',
+      'launches.view', 'launches.manage',
       'screen.view', 'devices.view',
       'inspection.view', 'inspection.manage',
       'netflow.view', 'netflow.manage',
     ],
-    3: ['dashboard.view', 'issues.view', 'issues.create'],
+    3: ['dashboard.view', 'issues.view', 'issues.create', 'launches.view'],
   };
 
   function currentUser() {

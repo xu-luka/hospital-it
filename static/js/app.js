@@ -144,6 +144,18 @@
     <div>
       <div class="page-title">工作台</div>
       <div class="page-sub">医院信息科日常管理总览 · {{ todayStr }}</div>
+      <!-- 上线提醒：不放进某个面板里，两个面板都要能看到 ——
+           上线是跨科室的日程，藏在「问题记录」标签页下等于没人看得到。
+           只读一次 /launches/summary，没有查看权限时不请求（省一次必然 403 的调用）。 -->
+      <div class="remind-bar" v-if="canLaunches && lc && (lc.upcomingTotal + lc.testingTotal) > 0">
+        <strong>上线提醒：</strong>
+        <span v-if="lc.testingTotal">{{ lc.testingTotal }} 个系统正在试运行，</span>
+        <span v-if="lc.upcomingTotal">{{ lc.upcomingTotal }} 个系统 30 天内计划上线。</span>
+        <span v-if="lc.upcoming.length" class="muted">
+          最近：{{ lc.upcoming[0].name }} · {{ lc.upcoming[0].plan_date }}
+        </span>
+        <a @click="goLaunches" style="margin-left:8px;cursor:pointer">查看上线管理 →</a>
+      </div>
       <div class="dash-tabs">
         <button v-if="canContracts" class="dash-tab" :class="{active: tab==='contract'}" @click="switchTab('contract')">📄 合同台账</button>
         <button v-if="canIssues" class="dash-tab" :class="{active: tab==='issue'}" @click="switchTab('issue')">🗂️ 问题记录</button>
@@ -255,7 +267,7 @@
       </div>
     </div>`,
     data() {
-      return { d: {}, cd: null, tab: 'contract', URGENCY_TAG, maxCnt: 1, cMonthlyMax: 1 };
+      return { d: {}, cd: null, lc: null, tab: 'contract', URGENCY_TAG, maxCnt: 1, cMonthlyMax: 1 };
     },
     computed: {
       todayStr() {
@@ -265,6 +277,7 @@
       // 工作台两个面板各自对应模块的查看权限
       canContracts() { return !!(window.HisPerm && window.HisPerm.can('contracts.view')); },
       canIssues() { return !!(window.HisPerm && window.HisPerm.can('issues.view')); },
+      canLaunches() { return !!(window.HisPerm && window.HisPerm.can('launches.view')); },
     },
     methods: {
       fmt: (s) => fmtDate(s),
@@ -290,6 +303,7 @@
       },
       goIssue(id) { location.hash = '#/issue/' + id; },
       goRemind() { location.hash = '#/remind'; },
+      goLaunches() { location.hash = '#/launches'; },
       switchTab(t) {
         if (t === 'contract' && !this.canContracts) return;
         if (t === 'issue' && !this.canIssues) return;
@@ -311,12 +325,21 @@
           this.d = d;
         } catch (e) { this.$toast(e.message, 'err'); }
       },
+      async loadLaunch() {
+        try {
+          this.lc = await this.$api.get('/launches/summary');
+        } catch (e) {
+          // 上线提醒拿不到不该让工作台报错：这个模块可能是后装的、还没重启服务
+          this.lc = null;
+        }
+      },
     },
     async mounted() {
       // 工作台的两个面板各自对应模块的查看权限：没有合同权限的人不必看到合同统计，
       // 也不去请求那个接口（省一次必然 403 的调用）
       if (this.canContracts) await this.loadContract();
       if (this.canIssues) await this.loadIssue();
+      if (this.canLaunches) await this.loadLaunch();
       if (!this.canContracts && this.canIssues) this.tab = 'issue';
     },
   };
