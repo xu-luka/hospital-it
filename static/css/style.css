@@ -3129,6 +3129,19 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-base); }
   margin-right: 4px;
 }
 
+/* 设备台账（机房巡检纳管对象：服务器 / 交换机 / 数据库 / ESXi）来的那一条。
+   用中性灰而不是再借一个语义色：终端=蓝、外网=橙、台账=灰，三个来源三种一眼可分的标记；
+   借 ok/warn/bad 会被读成「状态正常 / 警告 / 出错」，那是状态列该说的事。
+   标签只用两个字「台账」——这一列 136px 里已经有 IP（93.6px），四个字必换行。 */
+.chip-dev {
+  background: var(--surface-3);
+  border-color: var(--line);
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  padding: 1px 5px;
+  margin-right: 4px;
+}
+
 .ip-usage { display: flex; align-items: center; gap: 8px; }.ip-track {
   flex: 1;
   min-width: 60px;

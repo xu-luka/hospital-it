@@ -132,6 +132,9 @@
                   <span class="cell-sub" v-if="s.terminal_only">
                     其中 {{ s.terminal_only }} 个已被终端资产占用（未登记，含外网地址）
                   </span>
+                  <span class="cell-sub" v-if="s.device_only">
+                    其中 {{ s.device_only }} 个已被设备台账占用（服务器 / 交换机等）
+                  </span>
                 </td>
                 <td class="ops">
                   <button class="btn btn-sm btn-outline" @click="openFree(s)">空闲地址</button>
@@ -165,6 +168,7 @@
             <option value="">全部来源</option>
             <option value="manual">手工登记</option>
             <option value="terminal">终端资产</option>
+            <option value="device">设备台账</option>
           </select>
           <!-- 一旦手动改搜索词，就要退出「精确地址」模式：否则用户在框里改成 .30，
                结果还是那一条 .23，看着像查询失灵。@input 一定不能省。 -->
@@ -220,6 +224,10 @@
                          「它来自终端资产」这件事由备注首词和「查看设备」按钮表达。 -->
                     <span v-if="r.source === 'terminal'"
                           class="chip" :class="r.net === 'out' ? 'chip-wan' : 'chip-term'">{{ r.net === 'out' ? '外网' : '终端' }}</span>
+                    <!-- 设备台账（机房巡检纳管对象）来的地址。标签只用两个字：
+                         这一列 136px 装着 IP(93.6) + 标签 + 网段名，「设备台账」四个字必换行。 -->
+                    <span v-if="r.source === 'device'" class="chip chip-dev"
+                          title="来自【设备台账】（机房巡检纳管对象），只读同步">台账</span>
                     <span class="cell-sub">{{ segmentLabel(r.segment_id) }}</span>
                   </td>
                   <td><span class="dev-badge" :class="badgeOf(r.status)">{{ r.status_label }}</span></td>
@@ -231,7 +239,7 @@
                   </td>
                   <!-- 终端行的「使用人」取自台账的科室（Excel 21 列里没有责任人这一项），
                        比显示一个「—」有用得多 -->
-                  <td><span class="cell-sub">{{ r.owner || (r.device && r.device.department) || '—' }}</span></td>
+                  <td><span class="cell-sub">{{ r.owner || (r.device && r.device.department) || (r.dev && r.dev.location) || '—' }}</span></td>
                   <!-- 类型优先显示台账的「统计类别」（台式计算机 / 黑白打印机），比大类的「PC」具体 -->
                   <td><span class="cell-sub">{{ (r.device && r.device.stat_category) || r.device_type || '—' }}</span></td>
                   <td><span class="mono">{{ r.mac || '—' }}</span></td>
@@ -251,6 +259,10 @@
                     <template v-if="r.source === 'terminal'">
                       <button class="btn btn-sm btn-outline" @click="openTerminal(r)">查看设备</button>
                     </template>
+                    <!-- 设备台账那条：维护入口在【机房巡检 → 设备台账】，这里只给跳转 -->
+                    <template v-else-if="r.source === 'device'">
+                      <button class="btn btn-sm btn-outline" @click="openDevice(r)">查看台账</button>
+                    </template>
                     <template v-else-if="canManage">
                       <button class="btn btn-sm btn-outline" @click="openIpForm(r)">编辑</button>
                       <button class="btn btn-sm btn-outline btn-danger" @click="delIp(r)">删除</button>
@@ -264,8 +276,8 @@
                   <td colspan="2">本页 {{ ips.length }} 条</td>
                   <td colspan="6">
                     全部 {{ ipTotal }} 条
-                    <span v-if="ipTermTotal" class="muted">
-                      （手工登记 {{ ipManualTotal }} · 终端资产 {{ ipTermTotal }}）
+                    <span v-if="ipTermTotal || ipDevTotal" class="muted">
+                      （手工登记 {{ ipManualTotal }} · 终端资产 {{ ipTermTotal }}<template v-if="ipDevTotal"> · 设备台账 {{ ipDevTotal }}</template>）
                     </span>
                   </td>
                 </tr>
@@ -285,6 +297,13 @@
             院内「外网」指办公网（如 10.10.10.0/24）、「内网」指医疗业务网，两列都是真实在用的地址，
             所以都会并进对应网段、都参与占用统计 —— 别再手工登记一遍，会被拒绝。
             内网那行的橙色「外网 x.x.x.x」只是这台机器的另一个地址，不是第二个字段。
+          </div>
+          <div class="hint" v-if="ipDevTotal">
+            标了「台账」的这些行来自【机房巡检 → 设备台账】，同样是<b>自动同步</b>、不写进本页的登记表。
+            服务器、交换机、数据库、ESXi 这些机器在那边填了地址，这里就<b>算作已被占用</b> ——
+            否则地址分布图上那些格子是白的、空闲地址里还会把它们推荐出去，装完就撞 IP。
+            地址取自设备台账的「地址」一栏（<b>只填 IP</b>；写域名如 his-db.local 的设备没有地址可占，不会出现在这里）。
+            要改地址请到设备台账改那台设备；这台机器同时在本页手工登记过时，以本页那一条为准（不会重复出现两行）。
           </div>
           <div class="hint" v-if="mergeNote">{{ mergeNote }}</div>
         </div>
@@ -559,6 +578,11 @@
               已扣除 {{ freeView.terminal }} 个被【终端资产】占用的地址
               （其中 {{ freeView.terminal_only }} 个没有手工登记过）—— 这些地址分配出去会撞 IP。
             </div>
+            <!-- 服务器 / 交换机占着的地址同样不能推荐出去：装完就撞 IP，而且撞的是生产设备 -->
+            <div class="hint" v-if="freeView.device">
+              另扣除 {{ freeView.device }} 个被【设备台账】（机房巡检）占用的地址
+              （其中 {{ freeView.device_only }} 个没有手工登记过）。
+            </div>
           </div>
           <div class="modal-foot">
             <button class="btn btn-outline" @click="freeView = null">关闭</button>
@@ -578,7 +602,7 @@
         fIp: '',
         // 来源：'' = 全部（手工登记 + 终端资产）；'manual' / 'terminal'
         fSource: '',
-        ipManualTotal: 0, ipTermTotal: 0, mergeNote: '',
+        ipManualTotal: 0, ipTermTotal: 0, ipDevTotal: 0, mergeNote: '',
         // 地址分布图：每个网段一份，由后端算好格子
         maps: [],
         loadingSeg: false, loadingIp: false, loadingMap: false, saving: false,
@@ -657,6 +681,7 @@
           this.ipTotal = (d && d.total) || 0;
           this.ipManualTotal = (d && d.manual_total) || 0;
           this.ipTermTotal = (d && d.terminal_total) || 0;
+          this.ipDevTotal = (d && d.device_total) || 0;
           this.mergeNote = (d && d.merge_note) || '';
           if (d && d.statuses && d.statuses.length) this.statuses = d.statuses;
         } catch (e) {
@@ -692,6 +717,24 @@
           window.dispatchEvent(new CustomEvent('his:open-terminal', { detail: Number(id) }));
         } else {
           window.location.hash = '#/terminals';
+        }
+      },
+
+      /* 跳到【机房巡检 → 设备台账】并把搜索词填成这个地址。
+         那边是巡检纳管对象（有账号口令、端口、巡检状态），维护入口只在那边，
+         这里给个跳转比留一个「—」有用。同样用 sessionStorage 带一次性值，
+         hash 路由传不了参（那套解析会把 "devices?ip=..." 当成一个路径）。 */
+      openDevice(r) {
+        const ip = (r && r.ip) || '';
+        const name = (r && r.dev && r.dev.name) || (r && r.hostname) || '';
+        const kw = ip || name;
+        if (!kw) return;
+        try { sessionStorage.setItem('his_device_kw', kw); } catch (e) { /* 隐私模式忽略 */ }
+        if (window.location.hash === '#/devices') {
+          // 已经在设备台账页时改 hash 不会触发重新挂载，直接派发一次事件让那边自己筛
+          window.dispatchEvent(new CustomEvent('his:open-device', { detail: kw }));
+        } else {
+          window.location.hash = '#/devices';
         }
       },
 

@@ -322,7 +322,23 @@
       }
     },
 
-    mounted() { this.load(); this.loadMeta(); this.loadSource(); },
+    mounted() {
+      // 从【IP 管理】点「查看台账」跳过来：浏览器 hash 路由带不了参数，
+      // 那边把地址写进 sessionStorage，这里读一次就删（刷新不会又把筛选粘回去）。
+      try {
+        const k = sessionStorage.getItem('his_device_kw');
+        if (k) { sessionStorage.removeItem('his_device_kw'); this.kw = k; }
+      } catch (e) { /* 隐私模式忽略 */ }
+      this.onOpenDevice = (ev) => {
+        const k = String((ev && ev.detail) || '');
+        if (k) { this.kw = k; this.load(); }
+      };
+      window.addEventListener('his:open-device', this.onOpenDevice);
+      this.load(); this.loadMeta(); this.loadSource();
+    },
+    beforeUnmount() {
+      if (this.onOpenDevice) window.removeEventListener('his:open-device', this.onOpenDevice);
+    },
 
     methods: {
       authHint(t) { return AUTH_HINT[t] || t; },
