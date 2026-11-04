@@ -314,13 +314,7 @@
               <span class="ipmap-bar-num mono">{{ s.used }} / {{ s.host_count }}</span>
             </div>
           </div>
-          <div class="ipmap-legend">
-            <span class="ipmap-key"><i class="k-free"></i>空闲（未登记）</span>
-            <span class="ipmap-key"><i class="k-used"></i>已使用</span>
-            <span class="ipmap-key"><i class="k-reserved"></i>保留</span>
-            <span class="ipmap-key"><i class="k-conflict"></i>冲突</span>
-            <span class="ipmap-key"><i class="k-net"></i>网络 / 广播地址</span>
-          </div>
+          <!-- 图例不再挂在这里：它有计数，得跟着每张图走（见下面每个网段卡片） -->
           <div class="hint">「已使用」里包含【终端资产】里登记了 IP 的设备 —— 那些地址没写进本页的登记表，但确实被占着，悬停能看到是哪台机器。</div>
         </div>
 
@@ -349,13 +343,23 @@
                     class="ipmap-cell" :class="[cellClass(c), { reg: c.reg }]"
                     :title="c.tip" @click="onCell(m, c)">{{ c.label }}</span>
             </div>
+            <!-- 图例跟着每张图走并带计数：多网段并排时，全页共用一个图例分不清数字属于谁。
+                 数字按「图上实际画出的格子」统计，所以和眼睛看到的完全对得上。 -->
+            <div class="ipmap-legend">
+              <span class="ipmap-key"><i class="k-used"></i>已使用<b v-if="mapCounts[m.id]">{{ mapCounts[m.id].used }}</b></span>
+              <span class="ipmap-key"><i class="k-reserved"></i>保留<b v-if="mapCounts[m.id]">{{ mapCounts[m.id].reserved }}</b></span>
+              <span class="ipmap-key"><i class="k-conflict"></i>冲突<b v-if="mapCounts[m.id]">{{ mapCounts[m.id].conflict }}</b></span>
+              <span class="ipmap-key"><i class="k-free"></i>空闲<b v-if="mapCounts[m.id]">{{ mapCounts[m.id].free }}</b></span>
+              <span class="ipmap-key"><i class="k-net"></i>网络 / 广播<b v-if="mapCounts[m.id]">{{ mapCounts[m.id].edge }}</b></span>
+              <span class="muted" v-if="m.mode === 'block'">按 /24 聚合：图例数字是格子数（每格一个 /24），不是地址数</span>
+            </div>
             <div class="hint">
               <template v-if="m.mode === 'ip'">
                 每格一个地址，格内数字是该 IPv4 的最后一段（.0 / .16 / .32 正好是每行开头）。
-                有底色的格子表示已被占用（含终端资产占的），点一下可跳到「IP 登记」查它的归属。
+                填满颜色的格子表示已被占用（含终端资产占的），点一下可跳到「IP 登记」查它的归属。
               </template>
               <template v-else>
-                每格一个 /24，格内数字是该 /24 里已占用的个数（含终端资产，格子太小时不显示数字）。
+                每格一个 /24，格内数字是该 /24 里已占用的个数（含终端资产）。
                 鼠标停上去能看到具体是哪一段。
               </template>
               <template v-if="m.truncated"> · 该网段登记条数超过单次读取上限，图中没有画全。</template>
@@ -587,6 +591,28 @@
     computed: {
       canManage() { return !!(window.HisPerm && window.HisPerm.can('ipam.manage')); },
       pageCount() { return Math.max(1, Math.ceil(this.ipTotal / this.pageSize)); },
+      /**
+       * 每个网段的格子计数，给图例用。按「图上画出来的 cells」数，
+       * 不用后端聚合数 —— 后者含被截断（truncated）和被扣掉的首尾地址，
+       * 两边对不上时用户会以为图少画了格子。
+       * /24 聚合模式下数字是「格子数」而不是地址数，所以图例旁边必须写明单位，
+       * 不写就会有人拿「已使用 23」去对标题上的「已登记 369」。
+       */
+      mapCounts() {
+        const out = {};
+        (this.maps || []).forEach((m) => {
+          if (!m || !m.cells || !m.cells.length) return;
+          const c = { free: 0, used: 0, reserved: 0, conflict: 0, edge: 0 };
+          m.cells.forEach((x) => {
+            const s = (x && x.state) || 'free';
+            if (s === 'net' || s === 'bcast') c.edge += 1;
+            else if (c[s] === undefined) c.used += 1;   // 将来新增状态时归到「已使用」，不静默丢格子
+            else c[s] += 1;
+          });
+          out[m.id] = c;
+        });
+        return out;
+      },
     },
 
     mounted() { this.refreshAll(); },

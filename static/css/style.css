@@ -3175,7 +3175,14 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-base); }
 /* ---------- IP 管理：地址分布图 ----------
    表格回答「这个地址给了谁」，图回答「这一段还剩多少、哪里快满」。
    配色沿用全站状态语义（蓝=已用 / 琥珀=保留 / 红=冲突 / 灰=空闲），
-   所以不必重新学一套颜色；换句话说，图里出现的每种颜色在表格里都见得到。 */
+   所以不必重新学一套颜色；换句话说，图里出现的每种颜色在表格里都见得到。
+
+   ★ 2026-11-04 起「占用 = 灌满状态色 + 反白数字」，「空闲 = 浅灰底 + 灰字」。
+     之前占用是「10% 透明底 + 同色边框」，与空闲灰格的明度差不到 3%，
+     24px 的格子里就是同一层淡色 —— 用户的原话是「占用和没占用的看不清楚」。
+     现在改成「有块 / 没块」的差别：不依赖对比敏感度，退到几米外、投影偏色也还成立；
+     代价是占用率 >80% 时整图偏重，换来的是扫视速度。
+     别改回淡底 —— 淡底在缩略、投屏、老屏上必然糊成一片。 */
 
 /* 各网段使用率对比条 */
 .ipmap-bars { display: flex; flex-direction: column; gap: 8px; }
@@ -3218,13 +3225,16 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-base); }
   white-space: nowrap;
 }
 
-/* 图例：颜色只是加强，文字说明永远在（黑白打印、色盲都能读） */
+/* 图例：颜色只是加强，文字说明永远在（黑白打印、色盲都能读）。
+   ★ 图例跟着每张图走（放在网格下方）并带计数：全页只挂一个图例时，
+     两个网段并排就分不清「已使用 132」说的是哪一张。 */
 .ipmap-legend {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 8px 16px;
-  margin-top: 14px;
-  padding-top: 12px;
+  margin-top: 12px;
+  padding-top: 10px;
   border-top: 1px solid var(--line-soft);
   font-size: var(--fs-sm);
   color: var(--muted);
@@ -3237,28 +3247,35 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-base); }
   border-radius: var(--r-sm);
   background: var(--surface-3);
 }
-/* 空闲档把上面的默认值显式写一遍：图例是「四档并列」的东西，
-   写全了才不会被后来改上面那条通用规则的人顺手改歪 */
+.ipmap-key b {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  color: var(--text-2);
+}
+/* 色块与格子用同一套颜色：图例里看到的就是图上看到的（实心，不再用淡底） */
 .ipmap-key i.k-free     { background: var(--surface-3); border-color: var(--line-soft); }
-.ipmap-key i.k-used     { background: var(--info-soft); border-color: var(--info-line); }
-.ipmap-key i.k-reserved { background: var(--warn-soft); border-color: var(--warn-line); }
-.ipmap-key i.k-conflict { background: var(--bad-soft);  border-color: var(--bad-line); }
+.ipmap-key i.k-used     { background: var(--info); border-color: var(--info); }
+.ipmap-key i.k-reserved { background: var(--warn); border-color: var(--warn); }
+.ipmap-key i.k-conflict { background: var(--bad);  border-color: var(--bad); }
 .ipmap-key i.k-net      { background: transparent; border-style: dashed; border-color: var(--line); }
 
 /* 地址网格。16 列是刻意的：IPv4 最后一段 0-255 正好 16 行 16 列，
    于是「.16 在第二行第一格」这种心算成立，横向扫一行就是 16 个连续地址。 */
 .ipmap-grid {
   display: grid;
-  gap: 3px;
+  gap: 4px;
   max-width: 760px;
 }
 .ipmap-cell {
   display: flex;
   align-items: center;
   justify-content: center;
-  height: 24px;
+  height: 26px;
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
+  /* 空闲用常规字重、占用用 700 —— 颜色之外的第二层线索，
+     黑白打印或红绿色弱时靠字重也能分出哪些有东西 */
+  font-weight: 400;
   color: var(--quiet);
   background: var(--surface-3);
   border: 1px solid var(--line-soft);
@@ -3268,22 +3285,38 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-base); }
 }
 .ipmap-cell.reg { cursor: pointer; }
 .ipmap-cell:hover { border-color: var(--line-strong); }
-.ipmap-cell.st-used     { background: var(--info-soft); border-color: var(--info-line); color: var(--info); }
-.ipmap-cell.st-reserved { background: var(--warn-soft); border-color: var(--warn-line); color: var(--warn); }
-.ipmap-cell.st-conflict { background: var(--bad-soft);  border-color: var(--bad-line);  color: var(--bad); }
+/* 悬停用 --accent 描边：实心块上把边框换成「稍深的灰线」根本看不出被指着。
+   outline 用负 offset 画在格子内侧 —— 不参与布局，也不会被 4px 间隙裁掉一半。 */
+.ipmap-cell.reg:hover {
+  border-color: var(--accent);
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+/* 占用 = 灌满状态色 + 反白（暗色主题是「反深」）。文字色走 --on-* 令牌，
+   因为两套主题的状态色明暗相反：亮主题 #1a5fb4 上要白字，暗主题 #7cc4ff 上要深字。 */
+.ipmap-cell.st-used,
+.ipmap-cell.st-reserved,
+.ipmap-cell.st-conflict { font-weight: 700; }
+.ipmap-cell.st-used     { background: var(--info); border-color: var(--info); color: var(--on-info); }
+.ipmap-cell.st-reserved { background: var(--warn); border-color: var(--warn); color: var(--on-warn); }
+.ipmap-cell.st-conflict { background: var(--bad);  border-color: var(--bad);  color: var(--on-bad); }
 /* 网络 / 广播地址不参与登记，用「虚线空框」与「空闲的实线灰格」区分开 ——
-   不然看图上 .0 和 .1 长得一样，会以为第一个地址也能用 */
+   不然看图上 .0 和 .1 长得一样，会以为第一个地址也能用。
+   ★ 实心方案下这一档更不能跟着填色，否则 .0 会被读成「已被占用」。 */
 .ipmap-cell.st-net,
 .ipmap-cell.st-bcast {
   background: transparent;
   border-style: dashed;
   border-color: var(--line);
   color: var(--quiet);
+  font-weight: 400;
 }
-/* 上千格（/16 那种聚合成 256+ 块）时不存在格内文字，格子缩到最小，
-   否则一屏看不到几行，反而失去了「一眼看全」的意义 */
+/* 上千格（/16 那种聚合成 256+ 块）时格子缩到最小，
+   否则一屏看不到几行，反而失去了「一眼看全」的意义。
+   实心填色在密集模式照样成立（淡底方案在这一档会彻底糊成一片），
+   只是数字要再让一档，不然会顶出格子。 */
 .ipmap-grid.dense { gap: 2px; max-width: 100%; }
-.ipmap-grid.dense .ipmap-cell { height: 14px; }
+.ipmap-grid.dense .ipmap-cell { height: 14px; font-size: 9px; }
 
 /* ============================================================================
    十、统计条与进度条（2026-10-30：合同回款率 / 工单超期 / 文档索引共用）
