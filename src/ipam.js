@@ -576,6 +576,13 @@ function shapeSegment(row, stats) {
      （2026-10-30 用户就是拿这个当证据说 10.10.10.0/24 没关联上终端）。
      缺省应当是「满额空闲」：hostCount - 0 - 0。 */
   const st = stats || { registered: 0, used: 0, conflict: 0, terminal: 0, terminal_only: 0, device: 0, device_only: 0 };
+  /* ★「已登记」对用户来说就是「这个网段里已经有多少个地址被占着」，
+     不管那一条是手工登记的还是终端资产 / 设备台账带过来的。
+     2026-11-04 用户拿截图指出：台账里明明填了几十个地址，界面却写「已登记 0 · 剩余 175」，
+     看着像「这个网段完全是空的」，而下面小字又说「已被终端资产占用」—— 自相矛盾。
+     所以统一成一个数是 occupied = 手工 + 终端独占 + 设备独占（三者按地址去重），
+     registered（纯手工条数）保留下来只用于「构成明细」。 */
+  const occupied = (st.registered || 0) + (st.terminal_only || 0) + (st.device_only || 0);
   return {
     id: row.id,
     name: row.name || '',
@@ -596,9 +603,9 @@ function shapeSegment(row, stats) {
     registered: st.registered || 0,
     used: st.used || 0,
     conflict: st.conflict || 0,
-    free_count: c
-      ? Math.max(0, c.hostCount - (st.registered || 0) - (st.terminal_only || 0) - (st.device_only || 0))
-      : 0,
+    // 已占用地址数 = 手工登记 + 终端资产独占 + 设备台账独占（按地址去重，不重复扣）
+    occupied,
+    free_count: c ? Math.max(0, c.hostCount - occupied) : 0,
     // 终端资产里登记了 IP、且落在这个网段里的地址数（只读联动，不落库；内网 + 外网各算一个）
     terminal: st.terminal || 0,
     // 其中「没在本网段手工登记过」的那部分 —— 空闲地址计算要扣掉的就是它
@@ -671,7 +678,10 @@ function segmentStats() {
         const tIps = new Set(hitT.map((t) => t.ip));
         const hitD = devs.filter((d) => ipInCidr(d.ip, s.cidr));
         if (!hitT.length && !hitD.length) return;
-        const cur = map[k] || (map[k] = { registered: 0, used: 0, conflict: 0 });
+        const cur = map[k] || (map[k] = {
+          registered: 0, used: 0, conflict: 0,
+          terminal: 0, terminal_only: 0, device: 0, device_only: 0,
+        });
         if (hitT.length) {
           cur.terminal = hitT.length;
           cur.terminal_only = hitT.filter((t) => !(set && set.has(t.ip))).length;
@@ -716,12 +726,15 @@ function listSegments() {
     conflict: out.reduce((s, x) => s + x.conflict, 0),
     terminal: out.reduce((s, x) => s + (x.terminal || 0), 0),
     terminal_only: out.reduce((s, x) => s + (x.terminal_only || 0), 0),
+    device: out.reduce((s, x) => s + (x.device || 0), 0),
+    device_only: out.reduce((s, x) => s + (x.device_only || 0), 0),
   };
-  summary.free_count = Math.max(0, summary.host_count - summary.registered - summary.terminal_only);
-  // 使用率按「真占了几个地址」算：手工登记的在用 + 终端资产里认领的（去掉重复计算的）
-  const occupied = summary.used + summary.terminal_only;
+  // 合计口径必须和各网段行完全一致，否则「卡片上的数」和「表里各行加起来」对不上
+  summary.occupied = summary.registered + summary.terminal_only + summary.device_only;
+  summary.free_count = Math.max(0, summary.host_count - summary.occupied);
+  // 使用率按「真占了几个地址」算：手工登记的 + 终端资产独占 + 设备台账独占
   summary.usage_pct = summary.host_count
-    ? Math.round(occupied / summary.host_count * 1000) / 10 : 0;
+    ? Math.round(summary.occupied / summary.host_count * 1000) / 10 : 0;
   return { list: out, summary, statuses: STATUSES };
 }
 
@@ -1096,6 +1109,9 @@ function freeIpsOfSegment(segmentId, limit) {
     cidr: c.cidr,
     host_count: c.hostCount,
     registered: used.size,
+    // 这里的 registered 历史含义就是「已占用地址数」（含终端/设备补进来的），
+    // 与 shapeSegment 的「手工登记条数」同名不同义，前端统一读 occupied。
+    occupied: used.size,
     terminal: terms.length,
     terminal_only: extra,
     device: devs.length,
@@ -1169,6 +1185,8 @@ function segmentMap(segmentId, opts) {
     registered: info.registered,
     used: info.used,
     conflict: info.conflict,
+    // 地图卡片的标题也用「已登记」= 实际占用，和网段页签同一口径
+    occupied: info.occupied,
     terminal: info.terminal,
     terminal_only: info.terminal_only,
     device: info.device,
@@ -1269,10 +1287,14 @@ function segmentMap(segmentId, opts) {
       let state = 'free';
       if (a.conflict > 0) state = 'conflict';
       else if (occupied > 0) state = 'used';
-      let tip = cidr + ' · 已登记 ' + a.registered + ' / 256';
-      if (a.terminal) tip += '（另含终端资产 ' + a.terminal + ' 个）';
-      if (a.device) tip += '（另含设备台账 ' + a.device + ' 个）';
-      if (a.used) tip += '（已使用 ' + a.used + '）';
+      /* 悬停提示的口径必须和格内数字、网段页签一致：都说「已占用」，
+         不能上面写 17、这里写「已登记 0」——2026-11-04 用户就是拿这个当 bug 报的。 */
+      const bits = [];
+      if (a.registered) bits.push('手工 ' + a.registered);
+      if (a.terminal) bits.push('终端 ' + a.terminal);
+      if (a.device) bits.push('设备 ' + a.device);
+      let tip = cidr + ' · 已占用 ' + occupied + ' / 256'
+        + (bits.length ? '（' + bits.join(' · ') + '）' : '');
       if (a.conflict) tip += ' · 冲突 ' + a.conflict;
       return {
         ip: cidr,

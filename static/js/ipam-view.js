@@ -50,11 +50,15 @@
         </div>
         <div class="stat-card">
           <div class="bar bar-blue"></div>
-          <div class="num">{{ summary.registered || 0 }}</div>
+          <div class="num">{{ summary.occupied || 0 }}</div>
           <div class="lbl">已登记</div>
-          <!-- 终端资产那部分不落库、不算「登记」，但确实占了地址 —— 单独标出来，
-               否则用户会觉得「已登记 0 条，怎么剩余地址少了这么多」 -->
-          <div class="cell-sub" v-if="summary.terminal_only">+ 终端资产 {{ summary.terminal_only }}</div>
+          <!-- 终端资产 / 设备台账那部分不落库、不是「手工登记」，但确实占着地址 ——
+               2026-11-04 用户明确要求：已登记这个数必须把它们算进去，
+               否则「已登记 0 · 剩余 175」自相矛盾。手工那条数放到下面明细里。 -->
+          <div class="cell-sub" v-if="summary.terminal_only || summary.device_only">
+            手工 {{ summary.registered || 0 }} · 终端 {{ summary.terminal_only || 0 }}<template
+              v-if="summary.device_only"> · 设备 {{ summary.device_only }}</template>
+          </div>
         </div>
         <div class="stat-card">
           <div class="bar bar-green"></div>
@@ -126,14 +130,16 @@
                     <span class="ip-pct">{{ pct(s) }}%</span>
                   </div>
                   <span class="cell-sub">
-                    已登记 {{ s.registered }} · 剩余 {{ s.free_count }}
+                    已登记 {{ s.occupied || 0 }} · 剩余 {{ s.free_count }}
                     <template v-if="s.conflict"> · <b class="err-text">冲突 {{ s.conflict }}</b></template>
                   </span>
-                  <span class="cell-sub" v-if="s.terminal_only">
-                    其中 {{ s.terminal_only }} 个已被终端资产占用（未登记，含外网地址）
-                  </span>
-                  <span class="cell-sub" v-if="s.device_only">
-                    其中 {{ s.device_only }} 个已被设备台账占用（服务器 / 交换机等）
+                  <!-- 「已登记」= 手工 + 终端资产 + 设备台账（同一地址只算一次）。
+                       这一格只有 140px 宽，全称写下来会折成三行、最后一个数字单独悬在下面，
+                       所以明细用简称，全称放在悬停提示里。 -->
+                  <span class="cell-sub" v-if="s.terminal_only || s.device_only"
+                        :title="'手工登记 ' + s.registered + ' · 终端资产 ' + (s.terminal_only || 0) + ' · 设备台账 ' + (s.device_only || 0)">
+                    手工 {{ s.registered }}<template v-if="s.terminal_only"> · 终端 {{ s.terminal_only }}</template><template
+                      v-if="s.device_only"> · 设备 {{ s.device_only }}</template>
                   </span>
                 </td>
                 <td class="ops">
@@ -148,7 +154,9 @@
           </table>
         </div>
         <div class="hint">
-          使用率 = 标记为「已使用」的条数 ÷ 该网段可用地址数（/31 与 /32 不扣网络/广播地址）。
+          使用率 = 已登记地址数 ÷ 该网段可用地址数（/31 与 /32 不扣网络/广播地址，/24 为 254）。
+          「已登记」包含【终端资产】与【设备台账】里填了 IP 的机器 —— 那些地址没有写进本页的登记表，
+          但确实被占着（同一地址被多处填了只算一次）。
           「范围重叠」只作提示不拦：全院 /16 与科室 /24 并存时，同一个地址在两层都登记是合理的。
         </div>
       </div>
@@ -322,7 +330,7 @@
         <div class="card">
           <div class="card-title">
             <span>各网段使用率</span>
-            <span class="muted">按「已使用」条数 ÷ 该网段可用地址数</span>
+            <span class="muted">按「已登记」地址数 ÷ 该网段可用地址数</span>
           </div>
           <div v-if="!segs.length" class="muted">还没有网段，先到「网段」页签建一个。</div>
           <div v-else class="ipmap-bars">
@@ -330,11 +338,13 @@
               <span class="ipmap-bar-name" :title="s.name + '（' + s.cidr + '）'">{{ s.name }}</span>
               <span class="ipmap-bar-track"><i :class="usageClass(s)" :style="usageStyle(s)"></i></span>
               <span class="ipmap-bar-pct" :class="{ hot: pct(s) >= 90 }">{{ pct(s) }}%</span>
-              <span class="ipmap-bar-num mono">{{ s.used }} / {{ s.host_count }}</span>
+              <!-- 分子必须是「实际占用」而不是「手工登记条数」：2026-11-04 用户指出
+                   这里一直是 0 / 254，而进度条上明明有 31%，同一个行里两个数打架。 -->
+              <span class="ipmap-bar-num mono">{{ s.occupied || 0 }} / {{ s.host_count }}</span>
             </div>
           </div>
           <!-- 图例不再挂在这里：它有计数，得跟着每张图走（见下面每个网段卡片） -->
-          <div class="hint">「已使用」里包含【终端资产】里登记了 IP 的设备 —— 那些地址没写进本页的登记表，但确实被占着，悬停能看到是哪台机器。</div>
+          <div class="hint">「已登记」里包含【终端资产】和【设备台账】里填了 IP 的设备 —— 那些地址没写进本页的登记表，但确实被占着，悬停能看到是哪台机器。</div>
         </div>
 
         <div v-if="loadingMap" class="card muted">正在生成地址分布…</div>
@@ -348,8 +358,9 @@
             </span>
             <span class="muted">
               {{ m.mode === 'ip' ? '逐地址' : (m.mode === 'block' ? '按 /24 聚合' : '仅统计') }} ·
-              可用 {{ m.host_count }} · 已登记 {{ m.registered }} · 剩余 {{ m.free_count }}
+              可用 {{ m.host_count }} · 已登记 {{ m.occupied }} · 剩余 {{ m.free_count }}
               <template v-if="m.terminal_only"> · 终端 {{ m.terminal_only }}</template>
+              <template v-if="m.device_only"> · 设备 {{ m.device_only }}</template>
               <template v-if="m.conflict"> · <b class="err-text">冲突 {{ m.conflict }}</b></template>
             </span>
           </div>
@@ -375,10 +386,10 @@
             <div class="hint">
               <template v-if="m.mode === 'ip'">
                 每格一个地址，格内数字是该 IPv4 的最后一段（.0 / .16 / .32 正好是每行开头）。
-                填满颜色的格子表示已被占用（含终端资产占的），点一下可跳到「IP 登记」查它的归属。
+                填满颜色的格子表示已被占用（含终端资产与设备台账占的），点一下可跳到「IP 登记」查它的归属。
               </template>
               <template v-else>
-                每格一个 /24，格内数字是该 /24 里已占用的个数（含终端资产）。
+                每格一个 /24，格内数字是该 /24 里已占用的个数（含终端资产、设备台账）。
                 鼠标停上去能看到具体是哪一段。
               </template>
               <template v-if="m.truncated"> · 该网段登记条数超过单次读取上限，图中没有画全。</template>
@@ -566,7 +577,7 @@
           <div class="modal-head">空闲地址 · {{ freeView.name }}<span class="modal-close" @click="freeView = null">✕</span></div>
           <div class="modal-body">
             <div class="bulk-line">
-              {{ freeView.cidr }} · 可用 {{ freeView.host_count }} · 已登记 {{ freeView.registered }} ·
+              {{ freeView.cidr }} · 可用 {{ freeView.host_count }} · 已登记 {{ freeView.occupied }} ·
               剩余 <b class="ok-text">{{ freeView.free_count }}</b>
             </div>
             <div class="bulk-chips" v-if="freeView.ips.length">
@@ -741,13 +752,17 @@
       /* ---------- 展示辅助 ---------- */
       /**
        * 使用率 = 真被占了多少地址 / 可用地址数。
-       * ★ 必须把终端资产占的算进去：否则会出现「进度条 0%、剩余 254，点开空闲地址
+       * ★ 必须把终端资产、设备台账占的算进去：否则会出现「进度条 0%、剩余 254，点开空闲地址
        *   却少了一大截」的自相矛盾 —— 用户会以为空闲地址算错了。
+       * ★ 总数一律读后端的 occupied（唯一实现），前端不重复加一遍，
+       *   否则哪天优先级规则改了（比如设备台账提到终端前面），这里就开始漂移。
        */
       pct(s) {
         if (!s || !s.host_count) return '0.0';
-        const occupied = (s.used || 0) + (s.terminal_only || 0);
-        return Math.round(occupied / s.host_count * 1000) / 10;
+        const n = s.occupied != null
+          ? s.occupied
+          : (s.registered || 0) + (s.terminal_only || 0) + (s.device_only || 0);
+        return Math.round(n / s.host_count * 1000) / 10;
       },
       usageStyle(s) {
         const p = Number(this.pct(s));

@@ -159,6 +159,21 @@ try {
   eq('网段表：device', segRow.device, 5);
   eq('网段表：device_only', segRow.device_only, 5);
   eq('网段表：剩余数', segRow.free_count, 9);
+  eq('空闲地址弹窗：occupied 含设备台账', free.occupied, 5);
+
+  /* ★ 2026-11-04 用户反馈：界面写「已登记 0 · 剩余 175」，下面小字又说
+     「已被终端资产占用」—— 同一个网段里两个数打架。
+     「已登记」对用户就是「这段里有多少个地址被占着」，必须把终端资产 / 设备台账算进去。 */
+  eq('网段表：手工登记确实是 0 条', segRow.registered, 0);
+  eq('网段表：已登记(occupied) = 5，不是 0', segRow.occupied, 5);
+  eq('已登记 + 剩余 = 可用地址数（14）',
+    segRow.occupied + segRow.free_count, segRow.host_count);
+  const sum = ipam.listSegments().summary;
+  ok('合计：occupied 把设备台账算进去了', sum.occupied >= 5, sum.occupied);
+  eq('合计：剩余数扣掉了设备台账（不再只扣终端）',
+    sum.free_count, Math.max(0, sum.host_count - sum.occupied));
+  ok('合计：使用率不再按「手工条数」算（此时应 > 0）', sum.usage_pct > 0, sum.usage_pct);
+  eq('分布图卡片标题：occupied 同口径', map.occupied, 5);
 
   /* ==================== ⑤ 优先级：手工 > 终端 > 设备 ==================== */
   console.log('\n⑤ 同一个地址：手工登记 / 终端资产 / 设备台账 只出一行、只扣一次');
@@ -187,6 +202,10 @@ try {
   // 剩余数不能被扣两遍：.7 手工登记 + 设备占、.9 终端 + 设备占
   const free2 = ipam.freeIpsOfSegment(segId, 50);
   eq('剩余数仍然只扣一次（14 - 5 - 1 - 1）', free2.free_count, 7);
+  eq('已登记(occupied)：三方去重后仍是 7 条地址', free2.occupied, 7);
+  const segRow2 = ipam.listSegments().list.filter((s) => s.id === segId)[0];
+  eq('网段表：已登记 / 剩余 = 7 / 7',
+    (segRow2.occupied || 0) + '/' + segRow2.free_count, '7/7');
 
   /* ==================== ⑥ 手工登记设备台账里的地址：不拦，但提醒 ==================== */
   console.log('\n⑥ 手工登记一个设备台账里也有的地址');
