@@ -11,6 +11,7 @@ const fs = require('fs');
 const path = require('path');
 const { collectLinux } = require('./lib/linux');
 const { collectWindows } = require('./lib/windows');
+const { collectExporter } = require('./lib/exporter');
 const { collectBmc } = require('./lib/bmc');
 const { collectSwitch } = require('./lib/switch');
 const { collectDatabase } = require('./lib/database');
@@ -141,6 +142,9 @@ function validateServer(s, i) {
   } else if (os === 'windows') {
     if (auth.type === 'local') {
       // 本机巡检无需凭据
+    } else if (auth.type === 'exporter') {
+      // windows_exporter 通道：默认不需要凭据（只读 HTTP 端点）。
+      // 只有端点开了 Basic 认证时才填账号，所以这里不做必填校验。
     } else if (auth.type === 'wmi') {
       if (!auth.username) errs.push('缺少 auth.username');
       if (!auth.password) errs.push('auth.type=wmi 时缺少 auth.password');
@@ -151,7 +155,7 @@ function validateServer(s, i) {
       if (!auth.username) errs.push('缺少 auth.username');
       if (!auth.private_key_path) errs.push('auth.type=key 时缺少 auth.private_key_path');
     } else {
-      errs.push('Windows 的 auth.type 必须是 wmi、password、key 或 local');
+      errs.push('Windows 的 auth.type 必须是 wmi、password、key、exporter 或 local');
     }
   }
   return errs.map((e) => `第 ${i + 1} 台 [${s.name || s.host || '未命名'}]: ${e}`);
@@ -171,6 +175,7 @@ function connectLabelOf(server, os) {
   if (os === 'switch') return 'SSH(设备)';
   if (os === 'database') return (server.db || {}).engine === 'oracle' ? 'Oracle连接' : 'TDS连接';
   if (os === 'esxi') return 'vSphere API';
+  if (auth.type === 'exporter') return 'exporter';
   return auth.type === 'local' ? '本机' : auth.type === 'key' ? 'SSH 密钥' : auth.type === 'wmi' ? 'WMI' : 'SSH 密码';
 }
 
@@ -203,6 +208,10 @@ async function inspectOne(server, timeoutMs) {
     result = await collectDatabase(server, timeoutMs);
   } else if (os === 'esxi') {
     result = await collectEsxi(server, timeoutMs);
+  } else if (String((server.auth || {}).type || '') === 'exporter') {
+    // Windows 的第四条通道：只读 HTTP 拉 windows_exporter 的 /metrics，
+    // 不需要 sshd / 密码 / DCOM 动态端口。放在 collectWindows 之前分流。
+    result = await collectExporter(server, timeoutMs);
   } else {
     result = await collectWindows(server, timeoutMs);
   }

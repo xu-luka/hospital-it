@@ -75,7 +75,10 @@ router.get('/devices/meta', authRequired, (req, res) => {
       osTypes: repo.OS_TYPES.map((k) => ({ value: k, label: repo.OS_LABELS[k] || k })),
       authTypes: {
         linux: ['password', 'key'],
-        windows: ['password', 'wmi', 'key', 'local'],
+        // exporter = 目标机装 windows_exporter，走只读 HTTP 拉 /metrics。
+        // 不依赖 sshd / 密码 / DCOM，是去 SSH 化时最省事的一条通道。
+        // 注意：windows_exporter 0.30+ 只支持 Server 2016 及以上（2008R2/2012R2 用 wmi）。
+        windows: ['password', 'wmi', 'key', 'exporter', 'local'],
         bmc: ['bmc'],
         switch: ['password'],
         database: ['password'],

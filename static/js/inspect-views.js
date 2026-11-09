@@ -17,6 +17,7 @@
     password: 'SSH / 账号密码',
     key: 'SSH 私钥',
     wmi: 'WMI 远程',
+    exporter: 'exporter 指标端点',
     local: '本机（无需凭据）',
     bmc: '管理口 Redfish'
   };
@@ -170,24 +171,33 @@
             </div>
             <div class="form-row">
               <div class="form-item"><label>认证方式</label>
-                <select class="ipt" v-model="form.auth_type">
+                <select class="ipt" v-model="form.auth_type" @change="onAuthTypeChange(form.auth_type)">
                   <option v-for="t in (meta.authTypes[form.os] || [])" :key="t" :value="t">
                     {{ authHint(t) }}
                   </option>
                 </select></div>
               <div class="form-item" v-if="needPort"><label>位置 / 机柜</label>
                 <input class="ipt" v-model="form.location" placeholder="选填"></div>
-              <div class="form-item" v-if="form.os==='bmc'"><label>协议</label>
+              <div class="form-item" v-if="form.os==='bmc' || form.auth_type==='exporter'"><label>协议</label>
                 <select class="ipt" v-model="form.protocol">
                   <option value="https">https</option><option value="http">http</option>
                 </select></div>
             </div>
 
+            <!-- exporter 通道的说明放这里：它不是「连上去执行命令」，而是一个只读 HTTP 端点，
+                 能做什么不能做什么跟 SSH/WMI 差别很大，必须写清楚，否则用户配了服务检查却没生效会以为是 bug -->
+            <div class="hint" v-if="form.auth_type==='exporter'" style="margin:0 0 10px">
+              目标机需先安装 windows_exporter（默认监听 9182，只读 HTTP）。
+              本通道不执行远程命令：服务检查只按「服务名」判定，进程 / 端口类检查项会被跳过，自定义命令不会执行。
+              windows_exporter 0.30 及以上仅支持 Server 2016+，更老的系统（如 2008 R2）请用 WMI。
+            </div>
+
             <template v-if="form.auth_type!=='local'">
               <div class="form-row">
-                <div class="form-item"><label>登录账号 *</label>
-                  <input class="ipt" v-model="form.auth_username"></div>
-                <div class="form-item"><label>登录口令</label>
+                <div class="form-item"><label>{{ form.auth_type==='exporter' ? '账号（可选）' : '登录账号 *' }}</label>
+                  <input class="ipt" v-model="form.auth_username"
+                         :placeholder="form.auth_type==='exporter' ? '端点开了 Basic 认证才需要' : ''"></div>
+                <div class="form-item"><label>{{ form.auth_type==='exporter' ? '口令（可选）' : '登录口令' }}</label>
                   <input class="ipt" type="password" v-model="form.auth_password"
                          :placeholder="form.has_password ? '已加密保存，留空则不修改' : '留空表示不设置'"
                          autocomplete="new-password"></div>
@@ -317,6 +327,8 @@
       },
       needPort() { return this.form && this.form.os !== 'bmc'; },
       defaultPort() {
+        // exporter 走自己的 HTTP 端点，端口跟 SSH 的 22 完全无关，必须单独给默认值
+        if (this.form && this.form.auth_type === 'exporter') return '默认 9182';
         const m = { linux: 22, windows: 22, switch: 22, bmc: 443, esxi: 443, database: 1433 };
         return '默认 ' + (m[this.form && this.form.os] || '');
       }
@@ -342,6 +354,25 @@
 
     methods: {
       authHint(t) { return AUTH_HINT[t] || t; },
+
+      /**
+       * 切认证方式时联动端口与协议。
+       * 为什么必须做：SSH 的 22 和 exporter 的 9182 不是一回事，
+       * 从「账号密码」改成「exporter」却留着 22，采集必然连不上，
+       * 而错误信息只会说「拉取失败」，运维很难想到是端口没改。
+       */
+      onAuthTypeChange(v) {
+        const f = this.form;
+        if (!f) return;
+        if (v === 'exporter') {
+          // exporter 默认是明文 HTTP（msi 装完就是 http），选 https 反而连不上
+          if (!f.protocol || f.protocol === 'https') f.protocol = 'http';
+          if (!f.port || Number(f.port) === 22) f.port = 9182;
+        } else if (Number(f.port) === 9182) {
+          // 从 exporter 切回 SSH/WMI：清掉 9182，让占位符提示该类型自己的默认端口
+          f.port = null;
+        }
+      },
 
       statusClass(s) { return { normal: 'ok', warning: 'warn', critical: 'err', error: 'err' }[s] || 'muted'; },
       statusText(s) { return { normal: '正常', warning: '警告', critical: '严重', error: '失败' }[s] || s; },
