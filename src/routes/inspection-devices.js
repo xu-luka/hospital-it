@@ -217,6 +217,16 @@ router.post('/devices/:id/check', authRequired, async (req, res) => {
         cpu: r.metrics ? r.metrics.cpu_percent : null,
         mem: r.metrics ? r.metrics.mem_percent : null,
         hostname: r.metrics ? r.metrics.hostname : null,
+        // exporter 通道的扩展指标摘要：自检弹窗据此显示「自定义指标 N 条」，
+        // 运维不用等巡检报告就能确认目标机的 textfile 文件有没有被读到。
+        extra: r.extra ? {
+          sampled_twice: !!r.extra.sampled_twice,
+          threads: r.extra.system ? r.extra.system.threads : null,
+          disk_io_rows: (r.metrics && r.metrics.diskio) ? r.metrics.diskio.length : 0,
+          textfile_count: (r.extra.textfile || []).length,
+          textfile_names: (r.extra.textfile || []).slice(0, 8).map((x) => x.name),
+          note: r.note || ''
+        } : null,
         durationMs: Date.now() - t0
       }
     });

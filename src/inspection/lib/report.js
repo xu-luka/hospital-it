@@ -390,9 +390,53 @@ function serverCard(r, thresholds, idx) {
       <div class="sec-title">系统日志（近 24 小时）</div>
       <div class="kv"><div class="item"><div class="k">错误</div><div class="v" style="${m.log_errors > 0 ? 'color:#dc2626;font-weight:600' : ''}">${m.log_errors} 条</div></div><div class="item"><div class="k">警告</div><div class="v">${m.log_warns === null || m.log_warns === undefined ? '—' : m.log_warns + ' 条'}</div></div></div>` : '';
 
-    const customBlocks = (r.customs || []).map((c) => `
-      <div class="sec-title">自定义命令：${escapeHtml(c.name)}（退出码 ${c.code}）</div>
+    // 自定义项分两种来源：SSH/WMI 的远程命令输出，和 exporter textfile 的只读指标。
+    // 后者汇成一张表，别把几十个指标摊成几十个 <pre> 块。
+    const cmdBlocks = (r.customs || []).filter((c) => c.source !== 'textfile').map((c) => `
+      <div class="sec-title">自定义命令：${escapeHtml(c.name)}（退出码 ${escapeHtml(c.code)}）</div>
       <pre>${escapeHtml(c.output || '(无输出)')}</pre>`).join('');
+    const tfRows = (r.customs || []).filter((c) => c.source === 'textfile');
+    const textfileBlock = tfRows.length ? `
+      <div class="sec-title">自定义指标（textfile，共 ${tfRows.length} 条）</div>
+      <table><thead><tr><th>指标</th><th>当前值</th><th>采集键</th></tr></thead>
+      <tbody>${tfRows.map((c) => `<tr><td>${escapeHtml(c.name)}</td><td>${escapeHtml(c.output || '')}</td><td style="font-family:monospace;font-size:12px">${escapeHtml(c.key || '')}</td></tr>`).join('')}</tbody></table>` : '';
+    const customBlocks = cmdBlocks + textfileBlock;
+
+    // 扩展指标：只有 exporter 通道才会带 r.extra；缺项直接不显示，不摆一排「—」
+    let extraBlock = '';
+    const ex = r.extra;
+    if (ex) {
+      const kvOf = (list) => list
+        .filter((x) => x.v !== null && x.v !== undefined && x.v !== '')
+        .map((x) => `<div class="item"><div class="k">${escapeHtml(x.k)}</div><div class="v">${escapeHtml(String(x.v))}</div></div>`)
+        .join('');
+      const s = ex.system || {};
+      const mm = ex.memory || {};
+      const exKv = kvOf([
+        { k: '系统线程数', v: s.threads },
+        { k: '句柄数', v: s.handles },
+        { k: '处理器队列', v: s.processor_queue_length },
+        { k: '上下文切换/秒', v: s.context_switches_per_sec },
+        { k: '提交内存', v: mm.committed_mb === null || mm.committed_mb === undefined ? null : mm.committed_mb + ' MB' },
+        { k: '提交上限', v: mm.commit_limit_mb === null || mm.commit_limit_mb === undefined ? null : mm.commit_limit_mb + ' MB' },
+        { k: '提交使用率', v: mm.commit_percent === null || mm.commit_percent === undefined ? null : mm.commit_percent + '%' },
+        { k: '缺页/秒', v: mm.page_faults_per_sec }
+      ]);
+      const exDisks = (ex.disks || []).filter((d) => d.read_iops !== undefined || d.write_iops !== undefined);
+      const exDiskTable = exDisks.length ? `
+        <div class="sec-title" style="margin-top:10px">磁盘 IOPS 与平均延迟</div>
+        <table><thead><tr><th>卷</th><th>读 IOPS</th><th>写 IOPS</th><th>读延迟(ms)</th><th>写延迟(ms)</th><th>使用率</th></tr></thead>
+        <tbody>${exDisks.map((d) => `<tr><td>${escapeHtml(d.mount || '')}</td><td>${d.read_iops}</td><td>${d.write_iops}</td><td>${d.read_latency_ms === null ? '—' : d.read_latency_ms}</td><td>${d.write_latency_ms === null ? '—' : d.write_latency_ms}</td><td>${d.use_percent}%</td></tr>`).join('')}</tbody></table>` : '';
+      const exNets = (ex.net || []).filter((n) => n.rx_errors !== undefined);
+      const exNetTable = exNets.length ? `
+        <div class="sec-title" style="margin-top:10px">网络错包与带宽利用率</div>
+        <table><thead><tr><th>接口</th><th>收错包</th><th>发错包</th><th>收丢包</th><th>发丢包</th><th>带宽</th><th>利用率</th></tr></thead>
+        <tbody>${exNets.map((n) => `<tr><td>${escapeHtml(n.iface || '')}</td><td>${n.rx_errors}</td><td>${n.tx_errors}</td><td>${n.rx_drops}</td><td>${n.tx_drops}</td><td>${n.bandwidth_bps ? Math.round(n.bandwidth_bps / 1000000) + ' Mbps' : '—'}</td><td>${n.util_pct === null || n.util_pct === undefined ? '—' : n.util_pct + '%'}</td></tr>`).join('')}</tbody></table>` : '';
+      if (exKv || exDiskTable || exNetTable) {
+        extraBlock = `<div class="sec-title">扩展指标（windows_exporter）</div>`
+          + (exKv ? `<div class="kv">${exKv}</div>` : '') + exDiskTable + exNetTable;
+      }
+    }
 
     const perfTable = `
       <div class="sec-title">资源使用率</div>
@@ -403,7 +447,7 @@ function serverCard(r, thresholds, idx) {
         <tr><td>内存（已用/总量）</td><td colspan="4">${formatMB(m.mem_used_mb)} / ${formatMB(m.mem_total_mb)}</td></tr>
       </tbody></table>`;
 
-    body = `<div class="card-body">${kv}${perfTable}${diskTable}${netTable}${diskIoTable}${logLine}${svcTable}${customBlocks}</div>`;
+    body = `<div class="card-body">${kv}${perfTable}${diskTable}${netTable}${diskIoTable}${extraBlock}${logLine}${svcTable}${customBlocks}</div>`;
   }
   // 采集通道降级提示（如 wmic 被移除后自动改用 PowerShell/CIM）：置于卡片正文最前，成功采集也可见
   if (r.ok && r.note) {

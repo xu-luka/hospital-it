@@ -151,6 +151,20 @@
               <div v-if="checkResult.hostname">主机名：{{ checkResult.hostname }}</div>
               <div v-if="checkResult.cpu!=null">CPU：{{ checkResult.cpu }}%</div>
               <div v-if="checkResult.mem!=null">内存：{{ checkResult.mem }}%</div>
+              <div v-if="checkResult.extra" style="margin-top:8px;padding-top:8px;border-top:1px solid var(--line)">
+                <div style="font-weight:600;margin-bottom:4px">扩展采集（windows_exporter）</div>
+                <div>自定义指标（textfile）：<b>{{ checkResult.extra.textfile_count }}</b> 条
+                  <span v-if="checkResult.extra.textfile_names.length" class="muted">· {{ checkResult.extra.textfile_names.join('、') }}</span>
+                </div>
+                <div class="muted" style="margin-top:2px">
+                  磁盘 IO 明细 {{ checkResult.extra.disk_io_rows }} 行 ·
+                  系统线程 {{ checkResult.extra.threads==null ? '—' : checkResult.extra.threads }} ·
+                  {{ checkResult.extra.sampled_twice ? '两次采样已算速率' : '仅静态指标（第二次采样失败）' }}
+                </div>
+                <div v-if="!checkResult.extra.textfile_count" class="muted" style="margin-top:2px">
+                  没有采集到 textfile 指标：确认目标机 .prom 文件已放入 textfile_inputs 且指标名以 his_ 开头。
+                </div>
+              </div>
             </div>
           </div>
           <div class="modal-foot">
@@ -321,7 +335,7 @@
             <div class="form-row">
               <div class="form-item"><label>认证方式</label>
                 <select class="ipt" v-model="form.auth_type" @change="onAuthTypeChange(form.auth_type)">
-                  <option v-for="t in (meta.authTypes[form.os] || [])" :key="t" :value="t">
+                  <option v-for="t in ((meta.authTypes && meta.authTypes[form.os]) || [])" :key="t" :value="t">
                     {{ authHint(t) }}
                   </option>
                 </select></div>
@@ -337,7 +351,8 @@
                  能做什么不能做什么跟 SSH/WMI 差别很大，必须写清楚，否则用户配了服务检查却没生效会以为是 bug -->
             <div class="hint" v-if="form.auth_type==='exporter'" style="margin:0 0 10px">
               目标机需先安装 windows_exporter（默认监听 9182，只读 HTTP）。
-              本通道不执行远程命令：服务检查只按「服务名」判定，进程 / 端口类检查项会被跳过，自定义命令不会执行。
+              本通道不执行远程命令：服务检查只按「服务名」判定，进程 / 端口类检查项会被跳过，自定义命令不会执行；
+              自定义指标请改用 textfile 采集器（在目标机写 .prom 文件，指标名以 his_ 开头），无需在这里逐条配置。
               windows_exporter 0.30 及以上仅支持 Server 2016+，更老的系统（如 2008 R2）请用 WMI。
             </div>
 
@@ -381,8 +396,13 @@
             </div>
 
             <div class="form-sec">
-              <div style="font-weight:600;margin-bottom:6px">自定义命令
+              <div style="font-weight:600;margin-bottom:6px">自定义命令（仅 SSH / WMI 通道生效）
                 <button class="btn btn-sm btn-outline" style="margin-left:8px" @click="form.custom_commands.push({name:'',command:''})">+ 添加</button>
+              </div>
+              <div class="hint" v-if="form.auth_type==='exporter'" style="margin:0 0 8px">
+                exporter 通道不执行远程命令。自定义指标统一走 windows_exporter 的 textfile 采集器：
+                在目标机 <code>textfile_inputs</code> 目录放 .prom 文件，指标名以 <code>his_</code> 开头即可自动采集，
+                可用 <code># HELP his_xxx 中文名|单位</code> 指定显示名。这里填的命令会被跳过。
               </div>
               <div v-for="(c,i) in form.custom_commands" :key="'c'+i" style="display:flex;gap:6px;margin-bottom:6px">
                 <input class="ipt" style="width:150px" v-model="c.name" placeholder="显示名">
@@ -449,7 +469,7 @@
 
     data() {
       return {
-        rows: [], meta: {}, source: null, kw: '', fOs: '', fEnabled: '',
+        rows: [], meta: { authTypes: {}, osTypes: [] }, source: null, kw: '', fOs: '', fEnabled: '',
         form: null, formBase: '', errs: [], saving: false, checking: null, checkResult: null,
         cmp: null,
         stg: null, stgBase: '', timer: null,
