@@ -11,6 +11,7 @@
  *   DELETE /api/inspection/devices/:id        停用并软删除（管理员）
  *   POST   /api/inspection/devices/:id/toggle 启用/停用（管理员）
  *   POST   /api/inspection/devices/:id/check  单台连通性自检（管理员）
+ *   POST   /api/inspection/devices/:id/compare 两条通道并排对比（管理员，只读）
  *   GET    /api/inspection/settings           全局采集参数
  *   PUT    /api/inspection/settings           保存（管理员）
  *   GET    /api/inspection/source             当前数据源模式
@@ -28,6 +29,7 @@ const { logAction } = require('../utils');
 const repo = require('../inspection/device-repo');
 const secret = require('../inspection/lib/secret');
 const inspect = require('../inspection/inspect');
+const compare = require('../inspection/compare');
 const scheduler = require('../inspection/scheduler');
 
 const router = express.Router();
@@ -224,6 +226,173 @@ router.post('/devices/:id/check', authRequired, async (req, res) => {
       message: '自检失败',
       data: { id: id, name: row.name, ok: false, status: 'error', error: String((e && e.message) || e), durationMs: Date.now() - t0 }
     });
+  }
+});
+
+/* ---------------- 通道对比 ---------------- */
+
+/** 可参与对比的通道（local 除外：本机采集只对巡检服务器自己有意义） */
+const CMP_CHANNELS = ['exporter', 'password', 'key', 'wmi'];
+
+function cmpLabel(t) { return compare.channelLabelOf(String(t || '')); }
+
+/**
+ * 同一台设备、两条通道，各采一次，把数字并排摆出来。
+ *
+ * 存在的理由：把采集从 SSH 切到 exporter 之前，得先证明「新通道的数字跟老通道一样」。
+ * 没有这一步，切换就是赌 —— 切完发现少一个盘、服务全判成没在跑，
+ * 要等下一轮巡检（最坏 8 分钟）才暴露，而且多半会被当成「巡检系统坏了」。
+ *
+ * 四条约束：
+ *   1. 只读：不写台账、不改设备配置、不写 last_status。对比失败不影响巡检结果。
+ *   2. 对比通道的凭据是「临时」的：请求体传入，用完即弃，不落库、不进审计日志。
+ *      这样即使设备当前配的是 exporter，也能临时用 SSH 账号反向核对一次。
+ *   3. 两侧并行采集，各自独立超时兜底 —— 一侧卡住不能把另一侧的结果也拖没。
+ *   4. 只支持 Windows：Linux / 交换机 / 数据库只有一条采集通道，没有可对比的对象。
+ */
+router.post('/devices/:id/compare', authRequired, async (req, res) => {
+  if (!isAdmin(req.user)) return deny(res);
+  const id = Number(req.params.id);
+  const row = repo.getRow(id);
+  if (!row) return res.status(404).json({ code: 404, message: '设备不存在' });
+
+  if (String(row.os) !== 'windows') {
+    return res.status(400).json({
+      code: 400,
+      message: '通道对比只支持 Windows 设备（Linux / 交换机 / 数据库只有一条采集通道，没有可对比的对象）'
+    });
+  }
+
+  const body = req.body || {};
+  const curType = String(row.auth_type || '');
+  const otherType = String(body.channel || (curType === 'exporter' ? '' : 'exporter')).toLowerCase();
+
+  if (!otherType) {
+    return res.status(400).json({ code: 400, message: '当前设备已配成 exporter，请选择要对比的通道（如 SSH 密码）' });
+  }
+  if (otherType === curType) {
+    return res.status(400).json({ code: 400, message: '两侧通道相同，没有可对比的内容' });
+  }
+  if (CMP_CHANNELS.indexOf(otherType) < 0) {
+    return res.status(400).json({ code: 400, message: '对比通道只能是 exporter、SSH 密码、SSH 私钥或 WMI' });
+  }
+
+  const tmpUser = String(body.username || '').trim();
+  const tmpPass = String(body.password || '');
+  if (otherType !== 'exporter') {
+    if (!tmpUser) {
+      return res.status(400).json({
+        code: 400,
+        message: '对比 ' + cmpLabel(otherType) + ' 通道需要临时输入登录账号（只用于本次对比，不会保存）'
+      });
+    }
+    if (otherType === 'key' && !String(body.private_key_path || '').trim()) {
+      return res.status(400).json({ code: 400, message: '对比 SSH 私钥通道需要填写私钥文件路径' });
+    }
+  }
+
+  const t0 = Date.now();
+  const timeoutMs = Math.min(60000, Math.max(5000, Number(body.timeout_ms) || scheduler.state.timeoutMs || 30000));
+
+  try {
+    /* 当前通道：用台账里存的凭据（口径与自检完全一致） */
+    const base = repo.toServer(row);
+    const kr = await secret.loadMasterKeyAsync();
+    let cur = base;
+    if (kr.ok) {
+      cur = secret.decryptServer(base, kr.key).server;
+    } else if (String((base.auth || {}).password || '').indexOf('enc:v1:') === 0) {
+      return res.status(400).json({ code: 400, message: '主密钥不可用，无法解开该设备口令：' + kr.error });
+    }
+
+    /* 对比通道：临时构造，不落库 */
+    const other = {
+      name: base.name,
+      host: base.host,
+      os: 'windows',
+      auth: { type: otherType },
+      // 服务检查清单沿用台账里那一份 —— 否则两侧服务集合不同，比对没有意义
+      services: base.services || [],
+      custom_commands: []
+    };
+
+    if (otherType === 'exporter') {
+      other.port = Number(body.port) || 9182;
+      other.protocol = String(body.protocol || 'http').toLowerCase() === 'https' ? 'https' : 'http';
+      if (tmpUser) { other.auth.username = tmpUser; other.auth.password = tmpPass; }
+    } else if (otherType === 'wmi') {
+      other.auth.username = tmpUser;
+      other.auth.password = tmpPass;
+    } else {
+      other.auth.username = tmpUser;
+      other.auth.password = tmpPass;
+      if (otherType === 'key') {
+        other.auth.private_key_path = String(body.private_key_path || '').trim();
+        if (body.passphrase) other.auth.passphrase = String(body.passphrase);
+      }
+      // 当前是 exporter 时台账里的端口是 9182，不能拿来当 SSH 端口
+      other.port = Number(body.port) || (curType === 'exporter' ? 22 : (Number(base.port) || 22));
+    }
+
+    /** 采一侧：独立超时，永不 reject（失败也返回 ok:false，好让另一侧的结论还能看） */
+    const run = async (server) => {
+      const s = Date.now();
+      let timer = null;
+      try {
+        const work = inspect.inspectOne(server, timeoutMs)
+          .then((r) => inspect.evaluateResult(r, scheduler.state.thresholds || inspect.DEFAULT_THRESHOLDS));
+        const guard = new Promise((_r, rej) => {
+          timer = setTimeout(
+            () => rej(new Error('采集超时（上限 ' + Math.round((timeoutMs + 8000) / 1000) + ' 秒）')),
+            timeoutMs + 8000);
+        });
+        const r = await Promise.race([work, guard]);
+        r.ms = Date.now() - s;
+        return r;
+      } catch (e) {
+        return { ok: false, error: String((e && e.message) || e), ms: Date.now() - s, metrics: null, services: [] };
+      } finally {
+        // 不 clear 的话，这个定时器会把进程多留几十秒（也拖慢测试进程退出）
+        if (timer) clearTimeout(timer);
+      }
+    };
+
+    const [rl, rr] = await Promise.all([run(cur), run(other)]);
+    const d = compare.diffOf(rl, rr, { leftLabel: cmpLabel(curType), rightLabel: cmpLabel(otherType) });
+
+    const brief = (r, type) => ({
+      channel: type,
+      label: cmpLabel(type),
+      ok: !!r.ok,
+      status: r.ok ? (r.status || 'normal') : 'error',
+      error: r.ok ? null : (r.error || '采集失败'),
+      note: r.note || null,
+      ms: r.ms || 0,
+      hostname: r.metrics ? r.metrics.hostname : null,
+      cpu: r.metrics ? r.metrics.cpu_percent : null,
+      mem: r.metrics ? r.metrics.mem_percent : null
+    });
+
+    logAction(req.user, '台账.通道对比', {
+      id: id, name: row.name, left: curType, right: otherType,
+      verdict: d.verdict, diff: d.counts.diff
+    }, req.ip);
+
+    res.json({
+      code: 0,
+      message: '对比完成',
+      data: {
+        id: id,
+        name: row.name,
+        host: row.host,
+        left: brief(rl, curType),
+        right: brief(rr, otherType),
+        diff: { verdict: d.verdict, counts: d.counts, rows: d.rows, tips: d.tips },
+        durationMs: Date.now() - t0
+      }
+    });
+  } catch (e) {
+    res.status(500).json({ code: 500, message: '对比失败：' + String((e && e.message) || e) });
   }
 });
 

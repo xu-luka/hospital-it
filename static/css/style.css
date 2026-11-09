@@ -1107,6 +1107,9 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-base); }
 .dev-badge.warn  { color: var(--warn); }
 .dev-badge.err   { color: var(--bad); }
 .dev-badge.muted { color: var(--idle); }
+/* 「监控方式」列专用：只给 exporter 这种新通道上一点蓝，其余通道保持默认文字色。
+   这一列是信息不是状态，语义色用多了会盖过右边的状态列。 */
+.dev-badge.info  { color: var(--info); }
 
 /* 小信息片（合同分类、日志变更项） */
 .chip {
@@ -1782,14 +1785,31 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-base); }
 .iss-dept { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* 设备台账 */
-.dev-table { table-layout: fixed; min-width: 900px; }
-.dev-table .c-name  { width: 20%; }
-.dev-table .c-type  { width: 9%; }
-.dev-table .c-host  { width: 15%; }
-.dev-table .c-user  { width: 11%; }
+/* 操作列现在最多 5 个按钮（编辑 / 自检 / 通道对比 / 停用 / 删除），
+   900 的 min-width 会把「通道对比」挤到换行甚至溢出单元格，抬到 1100。
+   后来加了「监控方式」列，抬到 1240 仍然不够 —— 无头量过：8% 的类型列只有 99px，
+   减掉 24px 内边距剩 75px，放不下「Windows 服务器」（97px）会折成两行。
+   所以按「内容宽度 + 24px 内边距」倒推，定 1400：
+     名称 168 / 类型 140 / 监控方式 126 / 地址 182 / 账号 140 / 口令 126 / 上次 112 / 状态 84
+   列宽之和 77%，操作列吃剩下的 23%（322px，5 个按钮约 298px，有余量）。
+   ★ 改任何一列都要重跑这条：首行末个按钮的 right <= 单元格 right。 */
+.dev-table { table-layout: fixed; min-width: 1400px; }
+.dev-table .c-name  { width: 12%; }
+.dev-table .c-type  { width: 10%; }
+.dev-table .c-mon   { width: 9%; }
+.dev-table .c-host  { width: 13%; }
+.dev-table .c-user  { width: 10%; }
 .dev-table .c-pwd   { width: 9%; }
-.dev-table .c-last  { width: 10%; }
-.dev-table .c-state { width: 7%; }
+.dev-table .c-last  { width: 8%; }
+.dev-table .c-state { width: 6%; }
+/* 通道名最长的是「Oracle连接」。.dev-badge 是 nowrap，超宽会直接压到相邻列上，
+   所以这里给省略号兜底 —— 宁可显示「Oracle连…」也不要盖住地址列。 */
+.dev-table .c-mon .dev-badge {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+}
 .dev-host {
   font-family: var(--font-mono);
   font-size: var(--fs-sm);
@@ -1811,6 +1831,87 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-base); }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* ---- 通道对比（切换采集通道前的并排核对） ----
+   左右两张卡 + 中间 VS，下面是逐项对照表。判定不用颜色块铺底，
+   只在「不一致 / 不适用」两种需要人看一眼的行上加淡底，其余保持干净：
+   整表铺色会让「到底哪几项有问题」变得要逐行读。 */
+.cmp-cfg { display: flex; align-items: stretch; gap: 10px; margin-bottom: 12px; }
+.cmp-side {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+}
+.cmp-side.is-bad { border-color: var(--bad-line); background: var(--bad-soft); }
+.cmp-side-t { font-size: var(--fs-xs); color: var(--muted); margin-bottom: 4px; letter-spacing: .04em; }
+.cmp-side-v {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cmp-side-s {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cmp-side-s.mono { font-family: var(--font-mono); }
+.cmp-err {
+  font-size: var(--fs-xs);
+  color: var(--bad);
+  margin-top: 5px;
+  line-height: 1.5;
+  word-break: break-all;
+}
+.cmp-vs {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  color: var(--muted);
+  letter-spacing: .5px;
+}
+.cmp-sum { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.cmp-table-wrap {
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  overflow: hidden;
+}
+.cmp-table { table-layout: fixed; }
+.cmp-table .c-k { width: 42%; }
+.cmp-table .c-v { width: 84px; }
+.cmp-table th.c-v, .cmp-table td.c-v { text-align: center; }
+.cmp-table th.c-n, .cmp-table td.c-n { text-align: right; }
+.cmp-table td { padding-top: 6px; padding-bottom: 6px; }
+.cmp-note {
+  display: block;
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  margin-top: 2px;
+  line-height: 1.45;
+  white-space: normal;
+}
+.cmp-table tr.is-diff > td { background: var(--bad-soft); }
+.cmp-table tr.is-na > td { color: var(--muted); }
+.cmp-tips {
+  margin-top: 12px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface-3);
+  font-size: var(--fs-sm);
+  line-height: 1.75;
+  color: var(--text-2);
 }
 
 /* 巡检报告 */

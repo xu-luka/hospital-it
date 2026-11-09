@@ -17,7 +17,7 @@ const { collectSwitch } = require('./lib/switch');
 const { collectDatabase } = require('./lib/database');
 const { collectEsxi } = require('./lib/esxi');
 const { renderReport, evaluateResult } = require('./lib/report');
-const { nowHuman, nowStamp, sleep } = require('./lib/common');
+const { nowHuman, nowStamp, sleep, connectLabelOf: channelLabel } = require('./lib/common');
 const secret = require('./lib/secret');
 const paths = require('./paths');
 
@@ -170,13 +170,7 @@ function osLabelOf(os) {
 /** 连接方式显示名（同上，按设备类型 + 认证方式推导） */
 function connectLabelOf(server, os) {
   const auth = server.auth || {};
-  if (os === 'linux') return auth.type === 'key' ? 'SSH 密钥' : 'SSH 密码';
-  if (os === 'bmc') return 'Redfish';
-  if (os === 'switch') return 'SSH(设备)';
-  if (os === 'database') return (server.db || {}).engine === 'oracle' ? 'Oracle连接' : 'TDS连接';
-  if (os === 'esxi') return 'vSphere API';
-  if (auth.type === 'exporter') return 'exporter';
-  return auth.type === 'local' ? '本机' : auth.type === 'key' ? 'SSH 密钥' : auth.type === 'wmi' ? 'WMI' : 'SSH 密码';
+  return channelLabel(os, auth.type, (server.db || {}).engine);
 }
 
 async function inspectOne(server, timeoutMs) {

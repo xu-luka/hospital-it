@@ -112,6 +112,35 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/**
+ * 采集通道的显示名 —— 全系统唯一事实来源。
+ *
+ * ★ 曾经有三份实现：inspect.js 的 connectLabelOf、compare.js 的 CHANNEL_LABELS、
+ *   前端 AUTH_HINT。三份文案已经漂了（「SSH 密钥」和「SSH 私钥」并存），
+ *   所以台账列表、巡检详情、通道对比、编辑弹窗下拉里的同一个通道会显示成两个名字。
+ *   新增通道时只改这里，其余全部 follow。
+ *
+ * 参数用「扁平三元组」而不是 server 对象：调用方有 db row（平铺 auth_type）、
+ * 有采集配置（server.auth.type）、有前端传上来的裸字符串，包一层反而各自写适配。
+ *
+ * 「未设置」是真实存在的状态（老数据、或者只建了台账没填凭据），
+ * 不能兜底成「SSH 密码」——那会让一台根本采不到数的设备看起来配置正常。
+ */
+function connectLabelOf(os, authType, dbEngine) {
+  const t = String(authType || '');
+  if (os === 'linux') return !t ? '未设置' : (t === 'key' ? 'SSH 密钥' : 'SSH 密码');
+  if (os === 'bmc') return 'Redfish';
+  if (os === 'switch') return 'SSH(设备)';
+  if (os === 'database') return dbEngine === 'oracle' ? 'Oracle连接' : 'TDS连接';
+  if (os === 'esxi') return 'vSphere API';
+  if (t === 'exporter') return 'exporter';
+  if (t === 'local') return '本机';
+  if (t === 'key') return 'SSH 密钥';
+  if (t === 'wmi') return 'WMI';
+  if (!t) return '未设置';
+  return 'SSH 密码';
+}
+
 module.exports = {
   LEVEL_LABEL,
   levelRank,
@@ -131,5 +160,6 @@ module.exports = {
   psSingle,
   psDouble,
   normArray,
-  sleep
+  sleep,
+  connectLabelOf
 };

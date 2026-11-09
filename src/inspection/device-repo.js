@@ -25,6 +25,7 @@
  */
 const { db } = require('../db-contract');
 const secret = require('./lib/secret');
+const { connectLabelOf } = require('./lib/common');
 
 const PREFIX = 'enc:v1:';
 
@@ -163,6 +164,10 @@ function publicView(row) {
     enabled: row.enabled === 1,
     location: row.location,
     auth_type: row.auth_type,
+    /* 采集通道的展示名由后端算，前端只负责显示 —— 见 lib/common.js 的 connectLabelOf。
+       前端自己按 auth_type 映射一份的话，加通道时必然漏改一处，
+       台账列和巡检详情就会出现两个名字。 */
+    connect_label: connectLabelOf(row.os, row.auth_type, row.db_engine),
     auth_username: row.auth_username,
     has_password: !!row.auth_password,
     password_encrypted: isEnc(row.auth_password),

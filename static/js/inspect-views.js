@@ -13,9 +13,11 @@
   const STG_KEYS = ['concurrency', 'timeout_ms', 'interval_sec', 'ssh_port_default', 'report_dir', 'thresholds'];
 
   const OS_ORDER = ['linux', 'windows', 'esxi', 'switch', 'bmc', 'database'];
+  /* 表单下拉文案。比 connectLabelOf 长 —— 下拉里有空间说明「这条通道是什么」，
+     台账那一列只有 8% 宽，只能用短名。两者的通道集合必须一致，加通道时一起加。 */
   const AUTH_HINT = {
     password: 'SSH / 账号密码',
-    key: 'SSH 私钥',
+    key: 'SSH 密钥',
     wmi: 'WMI 远程',
     exporter: 'exporter 指标端点',
     local: '本机（无需凭据）',
@@ -69,6 +71,7 @@
               <tr>
                 <th class="c-name">设备名称</th>
                 <th class="c-type">类型</th>
+                <th class="c-mon">监控方式</th>
                 <th class="c-host">地址 / 端口</th>
                 <th class="c-user">登录账号</th>
                 <th class="c-pwd">口令</th>
@@ -79,7 +82,7 @@
             </thead>
             <tbody>
               <tr v-if="!rows.length">
-                <td colspan="8" class="empty-row">暂无设备</td>
+                <td colspan="9" class="empty-row">暂无设备</td>
               </tr>
               <tr v-for="r in rows" :key="r.id">
                 <td :title="r.name">
@@ -87,6 +90,11 @@
                   <span class="dev-sub">{{ r.remark || r.location || '-' }}</span>
                 </td>
                 <td>{{ r.osLabel }}</td>
+                <td class="c-mon">
+                  <!-- 监控方式 = 采集通道。名字由后端 connect_label 给（lib/common.js 唯一来源），
+                       前端不再按 auth_type 映射一份，否则台账和巡检详情会各叫一个名字。 -->
+                  <span :class="'dev-badge ' + monClass(r)" :title="monTip(r)">{{ r.connect_label || '未设置' }}</span>
+                </td>
                 <td><span class="dev-host">{{ r.host }}<span class="muted" v-if="r.port">:{{ r.port }}</span></span></td>
                 <td>{{ r.auth_username || '-' }}</td>
               <td>
@@ -108,6 +116,9 @@
                 <button v-if="isAdmin" class="btn btn-sm btn-outline" @click="check(r)" :disabled="checking===r.id">
                   {{ checking===r.id ? '检测中' : '自检' }}
                 </button>
+                <!-- 通道对比只对 Windows 有意义：那边才有 SSH / WMI / exporter 多条通道 -->
+                <button v-if="isAdmin && r.os==='windows'" class="btn btn-sm btn-outline"
+                        @click="openCompare(r)">通道对比</button>
                 <button v-if="isAdmin" class="btn btn-sm btn-outline" @click="toggle(r)">
                   {{ r.enabled ? '停用' : '启用' }}
                 </button>
@@ -144,6 +155,144 @@
           </div>
           <div class="modal-foot">
             <button class="btn btn-outline" @click="checkResult=null">关闭</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 通道对比：切换采集通道前的核对
+           ★ 不写 @click.self：里面有临时凭据输入框，误触遮罩清掉要重填。
+             退出走 ✕ / 关闭，填过凭据还没跑才确认。 -->
+      <div class="modal-mask" v-if="cmp">
+        <div class="modal" style="width:820px;max-height:88vh;overflow:auto">
+          <div class="modal-head">通道对比 · {{ cmp.row.name }} <span class="x" @click="closeCmp">✕</span></div>
+          <div class="modal-body">
+
+            <!-- 配置态 -->
+            <template v-if="!cmp.result">
+              <div class="hint" style="margin:0 0 12px">
+                同一台机器用两条通道各采一次，把数字并排核对。对比是只读的：不改台账、不改上一轮的巡检结果。
+                确认一致后再切换认证方式；切换后先别急着关 sshd，观察几轮再退役。
+              </div>
+              <div class="cmp-cfg">
+                <div class="cmp-side">
+                  <div class="cmp-side-t">当前通道（台账里配的）</div>
+                  <div class="cmp-side-v">{{ authHint(cmp.curType) }}</div>
+                  <div class="cmp-side-s mono">{{ cmp.row.host }}<span v-if="cmp.row.port">:{{ cmp.row.port }}</span></div>
+                </div>
+                <div class="cmp-vs">VS</div>
+                <div class="cmp-side">
+                  <div class="cmp-side-t">对比通道</div>
+                  <select class="ipt" v-model="cmp.otherType">
+                    <option v-for="t in cmpChannels" :key="t" :value="t">{{ authHint(t) }}</option>
+                  </select>
+                  <div class="cmp-side-s mono" v-if="cmp.otherType==='exporter'">{{ cmp.row.host }}:{{ cmp.port || 9182 }}/metrics</div>
+                  <div class="cmp-side-s mono" v-else>{{ cmp.row.host }}:{{ cmp.row.port || 22 }}</div>
+                </div>
+              </div>
+
+              <div class="form-row" v-if="cmp.otherType==='exporter'">
+                <div class="form-item"><label>exporter 端口</label>
+                  <input class="ipt" type="number" v-model="cmp.port" placeholder="默认 9182"></div>
+                <div class="form-item"><label>协议</label>
+                  <select class="ipt" v-model="cmp.protocol">
+                    <option value="http">http</option><option value="https">https</option>
+                  </select></div>
+              </div>
+
+              <div class="form-row">
+                <div class="form-item"><label>{{ cmp.otherType==='exporter' ? '账号（可选）' : '临时账号 *' }}</label>
+                  <input class="ipt" v-model="cmp.username" autocomplete="off"
+                         :placeholder="cmp.otherType==='exporter' ? '端点开了 Basic 认证才需要' : '只用于本次对比'"></div>
+                <div class="form-item"><label>{{ cmp.otherType==='exporter' ? '口令（可选）' : '临时口令' }}</label>
+                  <input class="ipt" type="password" v-model="cmp.password" autocomplete="new-password"
+                         placeholder="不写入台账"></div>
+              </div>
+              <div class="form-row" v-if="cmp.otherType==='key'">
+                <div class="form-item"><label>私钥文件路径 *</label>
+                  <input class="ipt" v-model="cmp.private_key_path" placeholder="如 C:\\keys\\id_inspect"></div>
+              </div>
+
+              <div class="hint" style="margin:0">
+                <template v-if="cmp.otherType!=='exporter'">
+                  临时凭据只用于这一次对比：不写入台账、不进审计日志，采完即从页面清掉。
+                  通常直接填台账里这台设备已经在用的那个账号就行，不必另外建。
+                </template>
+                <template v-else>
+                  exporter 通道默认不需要账号。两侧并行采集：SSH 一次要几秒，
+                  exporter 要隔 1 秒抓两次样，整体约 3~10 秒。
+                </template>
+              </div>
+            </template>
+
+            <!-- 结果态 -->
+            <template v-else>
+              <div class="cmp-sum">
+                <span :class="'dev-badge ' + cmpVerdictClass(cmp.result.diff.verdict)">
+                  {{ cmpVerdictText(cmp.result.diff.verdict) }}
+                </span>
+                <span class="muted">
+                  一致 {{ cmp.result.diff.counts.same }} · 接近 {{ cmp.result.diff.counts.close }} ·
+                  不一致 {{ cmp.result.diff.counts.diff }} · 不适用 {{ cmp.result.diff.counts.na }}
+                </span>
+                <div style="flex:1"></div>
+                <span class="muted">总耗时 {{ cmp.result.durationMs }} ms</span>
+                <button class="btn btn-sm btn-outline" @click="cmp.result=null">改通道</button>
+              </div>
+
+              <div class="cmp-cfg">
+                <div class="cmp-side" :class="{ 'is-bad': !cmp.result.left.ok }">
+                  <div class="cmp-side-t">{{ cmp.result.left.label }}（当前）</div>
+                  <div class="cmp-side-v">{{ cmp.result.left.ok ? (cmp.result.left.hostname || '已连接') : '采集失败' }}</div>
+                  <div class="cmp-side-s">{{ cmp.result.left.ok ? (cmp.result.left.ms + ' ms') : '' }}</div>
+                  <div class="cmp-err" v-if="!cmp.result.left.ok">{{ cmp.result.left.error }}</div>
+                </div>
+                <div class="cmp-vs">VS</div>
+                <div class="cmp-side" :class="{ 'is-bad': !cmp.result.right.ok }">
+                  <div class="cmp-side-t">{{ cmp.result.right.label }}（对比）</div>
+                  <div class="cmp-side-v">{{ cmp.result.right.ok ? (cmp.result.right.hostname || '已连接') : '采集失败' }}</div>
+                  <div class="cmp-side-s">{{ cmp.result.right.ok ? (cmp.result.right.ms + ' ms') : '' }}</div>
+                  <div class="cmp-err" v-if="!cmp.result.right.ok">{{ cmp.result.right.error }}</div>
+                </div>
+              </div>
+
+              <div class="cmp-table-wrap">
+                <table class="tbl cmp-table">
+                  <thead>
+                    <tr>
+                      <th class="c-k">指标</th>
+                      <th class="c-n">{{ cmp.result.left.label }}</th>
+                      <th class="c-n">{{ cmp.result.right.label }}</th>
+                      <th class="c-v">判定</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="row in cmp.result.diff.rows" :key="row.key" :class="cmpRowClass(row)">
+                      <td :title="row.note">
+                        {{ row.label }}
+                        <span class="cmp-note" v-if="row.note && (row.verdict==='diff' || row.verdict==='na')">{{ row.note }}</span>
+                      </td>
+                      <td class="c-n mono">{{ row.a }}</td>
+                      <td class="c-n mono">{{ row.b }}</td>
+                      <td class="c-v">
+                        <span :class="'dev-badge ' + cmpVerdictClass(row.verdict)">{{ cmpVerdictText(row.verdict) }}</span>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <div class="cmp-tips">
+                <div v-for="(t,i) in cmp.result.diff.tips" :key="i">· {{ t }}</div>
+              </div>
+            </template>
+
+            <div v-if="cmp.error" class="err-box" style="margin-top:10px">{{ cmp.error }}</div>
+          </div>
+          <div class="modal-foot">
+            <button class="btn btn-outline" @click="closeCmp">关闭</button>
+            <button class="btn btn-primary" @click="runCompare" :disabled="cmp.running">
+              {{ cmp.running ? '采集中…' : (cmp.result ? '再测一次' : '开始对比') }}
+            </button>
           </div>
         </div>
       </div>
@@ -302,6 +451,7 @@
       return {
         rows: [], meta: {}, source: null, kw: '', fOs: '', fEnabled: '',
         form: null, formBase: '', errs: [], saving: false, checking: null, checkResult: null,
+        cmp: null,
         stg: null, stgBase: '', timer: null,
         thresholdKeys: [
           { k: 'cpu_percent_warn', label: 'CPU 警告' },
@@ -326,6 +476,11 @@
         return OS_ORDER.filter((k) => map[k]).map((k) => ({ value: k, label: map[k] }));
       },
       needPort() { return this.form && this.form.os !== 'bmc'; },
+      /** 可选的对比通道：排除当前通道（同一通道对比没有意义） */
+      cmpChannels() {
+        const cur = this.cmp ? this.cmp.curType : '';
+        return ['exporter', 'password', 'key', 'wmi'].filter((t) => t !== cur);
+      },
       defaultPort() {
         // exporter 走自己的 HTTP 端点，端口跟 SSH 的 22 完全无关，必须单独给默认值
         if (this.form && this.form.auth_type === 'exporter') return '默认 9182';
@@ -354,6 +509,38 @@
 
     methods: {
       authHint(t) { return AUTH_HINT[t] || t; },
+
+      /**
+       * 「监控方式」徽章的颜色。
+       * 只给两种语义色，其余保持默认文字色 —— 这一列是信息不是状态，
+       * 一片绿/黄会盖过右边真正需要注意的「状态」列。
+       * warn 只留给「未设置」：那种设备其实一次都采不到，是真问题而不是显示问题。
+       */
+      monClass(r) {
+        const lab = r && r.connect_label;
+        if (!lab || lab === '未设置') return 'warn';
+        if (r.auth_type === 'exporter') return 'info';
+        return '';
+      },
+
+      /** 悬停补一句「这条路怎么走、有什么前提」，省得回头查文档 */
+      monTip(r) {
+        const lab = (r && r.connect_label) || '';
+        const M = {
+          'exporter': '只读 HTTP 指标端点（默认 9182 /metrics），不经过 SSH，不需要账号密码',
+          'WMI': 'WMI / DCOM：TCP 135 + RPC 动态端口。补丁随 Windows Update 走，不用手工追版本',
+          'SSH 密码': 'SSH 账号密码登录。Windows 上是 keyboard-interactive 通道，只关 PasswordAuthentication 关不掉它',
+          'SSH 密钥': 'SSH 私钥认证，免密码。Windows 管理员的公钥在 administrators_authorized_keys',
+          'SSH(设备)': '网络设备自带的 SSH 服务（设备侧只支持账号密码）',
+          'Redfish': '管理口 Redfish（默认 443）：温度、风扇、电源、RAID 这类硬件告警只能从这一层取',
+          'TDS连接': '数据库直连（TDS），不经过操作系统',
+          'Oracle连接': '数据库直连（Oracle），不经过操作系统',
+          'vSphere API': 'vSphere API（默认 443）',
+          '本机': '巡检服务器本机，不走网络、不需要凭据',
+          '未设置': '还没选采集通道，这台设备现在采不到任何数据'
+        };
+        return M[lab] || '采集通道：' + (lab || '未设置');
+      },
 
       /**
        * 切认证方式时联动端口与协议。
@@ -483,6 +670,73 @@
         } catch (e) {
           this.$toast(e.message, 'err');
         } finally { this.checking = null; }
+      },
+
+      /* ---------------- 通道对比 ---------------- */
+
+      /**
+       * 打开对比弹窗。默认「当前通道 vs exporter」——这是实际会用到的方向
+       * （设备现在跑 SSH，想知道换 exporter 后数对不对）。
+       * 反方向（当前已是 exporter，想用 SSH 反向核对）也支持：此时默认选 SSH 密码。
+       */
+      openCompare(r) {
+        this.cmp = {
+          row: r,
+          curType: r.auth_type || '',
+          otherType: r.auth_type === 'exporter' ? 'password' : 'exporter',
+          port: 9182,
+          protocol: 'http',
+          username: '', password: '', private_key_path: '',
+          running: false, error: '', result: null
+        };
+      },
+
+      closeCmp() {
+        const c = this.cmp;
+        if (!c || c.running) return;
+        // 只在「填了临时凭据、还没跑出结果」时拦一下：跑完再关没有损失
+        const dirty = !c.result && !!(c.username || c.password || c.private_key_path);
+        if (dirty && !window.confirm('关掉后临时填写的账号口令会被丢弃，确定关闭？')) return;
+        this.cmp = null;
+      },
+
+      cmpVerdictClass(v) {
+        return { same: 'ok', close: 'warn', diff: 'err', blocked: 'err', na: 'muted' }[v] || 'muted';
+      },
+      /** 行底色：只有「不一致 / 不适用」需要一眼看见，其余保持干净 */
+      cmpRowClass(row) {
+        const v = row && row.verdict;
+        return v === 'diff' ? 'is-diff' : v === 'na' ? 'is-na' : '';
+      },
+      cmpVerdictText(v) {
+        return { same: '一致', close: '接近', diff: '不一致', blocked: '无法对比', na: '不适用' }[v] || v;
+      },
+
+      async runCompare() {
+        const c = this.cmp;
+        if (!c || c.running) return;
+        if (c.otherType !== 'exporter' && !String(c.username || '').trim()) {
+          this.$toast('对比 ' + this.authHint(c.otherType) + ' 通道需要填写临时账号', 'err');
+          return;
+        }
+        if (c.otherType === 'key' && !String(c.private_key_path || '').trim()) {
+          this.$toast('SSH 私钥通道需要填写私钥文件路径', 'err');
+          return;
+        }
+        c.running = true; c.error = '';
+        try {
+          const body = { channel: c.otherType, username: c.username, password: c.password };
+          if (c.otherType === 'exporter') {
+            body.port = Number(c.port) || 9182;
+            body.protocol = c.protocol;
+          }
+          if (c.otherType === 'key') body.private_key_path = c.private_key_path;
+          c.result = await api.post('/api/inspection/devices/' + c.row.id + '/compare', body);
+          // 口令不在页面里多留一秒
+          c.password = '';
+        } catch (e) {
+          c.error = e.message;
+        } finally { c.running = false; }
       },
 
       async openSettings() {

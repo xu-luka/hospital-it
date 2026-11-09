@@ -440,6 +440,13 @@ async function testRepoRoundtrip() {
       eq('从台账取出后能采集', res.ok, true);
       eq('从台账取出后连接方式', res.connectLabel, 'exporter');
       eq('从台账取出后能判服务', (res.services[0] || {}).running, true);
+
+      /* 「监控方式」列读的是 publicView().connect_label（列表接口直接给前端显示），
+         不是巡检结果里的 connectLabel —— 两处必须同一个名字，否则台账列和详情会对不上。 */
+      eq('列表视图带 connect_label', repo.publicView(row).connect_label, 'exporter');
+      eq('列表视图的 connect_label 与巡检结果一致', repo.publicView(row).connect_label, res.connectLabel);
+      eq('没配通道时显示「未设置」而不是「SSH 密码」',
+        repo.publicView({ os: 'windows', auth_type: '', db_engine: '' }).connect_label, '未设置');
     }
   } finally {
     if (id) db.prepare('DELETE FROM it_devices WHERE id=?').run(id);
