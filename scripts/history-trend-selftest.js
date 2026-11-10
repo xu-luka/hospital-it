@@ -145,6 +145,34 @@ try {
   H.db.prepare("UPDATE it_inspect_history SET metrics_json = '{坏 JSON' WHERE round_no = 1").run();
   ok('坏 JSON 不抛错', H.catalog().ready === true);
   ok('坏 JSON 只丢那一行', H.seriesFor(1, 'cpu_percent', '1h').count === 2);
+
+  /* ---------- ⑨ 目录永不为空：一轮巡检都没跑过时下拉框也必须能选 ---------- */
+  // 事故背景：catalog() 原来只看最近一轮 metrics_json，新部署 / 还没跑巡检时返回
+  // items:[]，前端两个 <select> 一个 option 都没有，界面上只剩空白小箭头。
+  const emptyFile = path.join(tmp, 'empty.db');
+  H.useDbFile(emptyFile);
+  const c0 = H.catalog();
+  ok('空库 catalog ready', c0.ready);
+  ok('空库仍返回内置目录（下拉不会空）', c0.items.length >= 20, c0.items.length);
+  ok('空库标记 from_static', c0.from_static === true);
+  eq('空库 live = 0', c0.live, 0);
+  ok('空库目录含 CPU / 内存 / 磁盘',
+    ['cpu_percent', 'mem_percent', 'disk_percent_max'].every((k) => c0.items.some((x) => x.key === k)));
+  ok('内置项都有中文名', c0.items.every((x) => x.label && x.label !== x.key));
+  ok('内置项 builtin=true / live=false', c0.items.every((x) => x.builtin === true && x.live === false));
+  ok('目录按 key 排序', c0.items.every((x, i, a) => i === 0 || a[i - 1].key <= x.key));
+
+  // 切回有 3 轮数据的库：静态 ∪ 动态不能重复，textfile 中文名仍要优先
+  H.useDbFile(file);
+  const c1 = H.catalog();
+  const k1 = c1.items.map((x) => x.key);
+  eq('静态∪动态不重复', new Set(k1).size, k1.length);
+  eq('动态 textfile 中文名仍来自 HELP',
+    (c1.items.find((x) => x.key === 'tf.his_settle_ms') || {}).label, '医保结算耗时');
+  ok('采到的内置项 live=true', (c1.items.find((x) => x.key === 'cpu_percent') || {}).live === true);
+  ok('未采到的内置项 live=false', k1.includes('x.bandwidth_used_percent')
+    && (c1.items.find((x) => x.key === 'x.bandwidth_used_percent') || {}).live === false);
+  ok('有数据时 from_static=false', c1.from_static === false);
 } catch (e) {
   fail++;
   console.error('FAIL  未捕获异常：' + (e && e.stack || e));

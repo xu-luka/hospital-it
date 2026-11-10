@@ -3904,7 +3904,12 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-base); }
   border: 1px solid var(--sc-line); border-radius: 4px;
   font-size: var(--fs-xs); padding: 3px 6px; max-width: 190px;
 }
-.sx-sel.wide { max-width: 230px; }
+/* 原生 select 宽度由最长 option 撑开：目录为空时会缩成只剩下拉箭头的小方框，
+   看着像控件坏了。min-width 保证框里始终留得下文字；option 显式配色 +
+   color-scheme 保证深色主题下点开下拉也看得清选项。 */
+.sx-sel { min-width: 132px; color-scheme: dark; }
+.sx-sel option { background: #12171e; color: var(--sc-text); }
+.sx-sel.wide { min-width: 168px; max-width: 230px; }
 .sx-ipt { width: 66px; text-align: right; font-family: var(--font-mono); }
 .sx-ranges { display: inline-flex; gap: 2px; margin-left: auto; }
 .sx-ranges .opt {

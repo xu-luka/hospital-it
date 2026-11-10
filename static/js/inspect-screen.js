@@ -22,6 +22,21 @@
   // 排序权重：严重在最前，值班扫一眼就能看到要看的
   const ST_ORDER = { critical: 0, warning: 1, error: 2, normal: 3 };
 
+  // 指标下拉的最后一道兜底：新版后端 /metrics/catalog 会返回「内置目录 ∪ 实际采集」，
+  // 但服务没重启、接口 404、或连的是旧后端时可能返回空 items。空 <select> 在界面上
+  // 只剩一个孤零零的小箭头，值班同事会以为控件坏了，所以这里保底给几个最常用指标。
+  // 只放高频内置项，中文名与后端 METRIC_CATALOG 保持一致；动态 textfile 指标仍以后端为准。
+  const FALLBACK_METRICS = [
+    { key: 'cpu_percent', label: 'CPU 使用率', unit: '%' },
+    { key: 'mem_percent', label: '内存使用率', unit: '%' },
+    { key: 'disk_percent_max', label: '磁盘最大使用率', unit: '%' },
+    { key: 'log_errors', label: '事件日志错误数', unit: '条' },
+    { key: 'load1', label: '负载 1 分钟', unit: '' },
+    { key: 'net_total_kbps', label: '网卡总速率', unit: 'KB/s' },
+    { key: 'x.commit_percent', label: '提交内存占比', unit: '%' },
+    { key: 'x.tcp_established', label: 'TCP 已建立连接', unit: '个' }
+  ];
+
   function pad(n) { return String(n).padStart(2, '0'); }
 
   V.BigScreenView = {
@@ -95,7 +110,7 @@
           <div>
             <div class="sx-title">扩展监控与告警</div>
             <div class="sx-sub">第 {{ ext.latest.roundNo || '—' }} 轮 · {{ ext.latest.checkedAt || '暂无历史' }}
-              · 业务指标 {{ bizCards.length }} 项 · 可用指标 {{ ext.catalog.length }} 项</div>
+              · 业务指标 {{ bizCards.length }} 项 · 可用指标 {{ metricOptions.length }} 项</div>
           </div>
           <div style="flex:1"></div>
           <span class="sx-chip" :class="{bad: ext.summary.critical > 0}">严重 {{ ext.summary.critical }}</span>
@@ -121,7 +136,7 @@
                 <option v-for="d in extDevices" :key="d.id" :value="d.id">{{ d.name }}</option>
               </select>
               <select v-model="ext.key" class="sx-sel wide" @change="loadSeries">
-                <option v-for="m in ext.catalog" :key="m.key" :value="m.key">{{ m.label }}</option>
+                <option v-for="m in metricOptions" :key="m.key" :value="m.key">{{ m.label }}</option>
               </select>
               <span class="sx-ranges">
                 <span v-for="r in ext.ranges" :key="r.key" class="opt"
@@ -175,7 +190,7 @@
               <option v-for="d in extDevices" :key="d.id" :value="d.id">{{ d.name }}</option>
             </select>
             <select v-model="ext.newRule.metric_key" class="sx-sel wide">
-              <option v-for="m in ext.catalog" :key="m.key" :value="m.key">{{ m.label }}</option>
+              <option v-for="m in metricOptions" :key="m.key" :value="m.key">{{ m.label }}</option>
             </select>
             <span class="k">警告</span><input class="sx-ipt" type="number" v-model.number="ext.newRule.warn">
             <span class="k">严重</span><input class="sx-ipt" type="number" v-model.number="ext.newRule.crit">
@@ -436,6 +451,15 @@
     },
 
     computed: {
+      /** 指标下拉的数据源：以后端目录为准，缺失时用内置高频项补齐，绝不返回空数组 */
+      metricOptions() {
+        const list = (this.ext.catalog || []).slice();
+        const seen = new Set(list.map((m) => m.key));
+        for (const m of FALLBACK_METRICS) {
+          if (!seen.has(m.key)) { list.push(m); seen.add(m.key); }
+        }
+        return list;
+      },
       user() { return window.HisUser ? window.HisUser.user : null; },
       // 大屏是「显示终端」：能不能打开看「监控大屏.查看」，
       // 能显示哪些内容取决于有没有对应模块的查看权限 —— 没有就不请求、不显示，
@@ -632,7 +656,7 @@
         const out = [];
         const seen = new Set();
         const cat = {};
-        for (const m of (this.ext.catalog || [])) cat[m.key] = m;
+        for (const m of this.metricOptions) cat[m.key] = m;
         for (const d of (this.ext.latest.items || [])) {
           for (const k of Object.keys(d.metrics || {})) {
             if (k.indexOf('tf.') !== 0 || seen.has(k)) continue;
@@ -857,7 +881,17 @@
         const devs = (this.data.devices || []).filter((d) => d && d.id);
         if (!this.ext.deviceId && devs.length) this.ext.deviceId = devs[0].id;
         if (!this.ext.newRule.device_id && devs.length) this.ext.newRule.device_id = devs[0].id;
-        if (catalog.length && !catalog.some((m) => m.key === this.ext.key)) this.ext.key = catalog[0].key;
+        // 下拉永远不能出现「v-model 的值不在 options 里」：那样 select 会显示成空白框。
+        // 目录空 / 服务没重启 / 连到旧后端时，用内置兜底项一并校正当前选中值。
+        const merged = catalog.slice();
+        const seenKeys = new Set(merged.map((m) => m.key));
+        for (const m of FALLBACK_METRICS) {
+          if (!seenKeys.has(m.key)) { merged.push(m); seenKeys.add(m.key); }
+        }
+        if (!merged.some((m) => m.key === this.ext.key)) this.ext.key = merged[0].key;
+        if (!merged.some((m) => m.key === this.ext.newRule.metric_key)) {
+          this.ext.newRule.metric_key = merged[0].key;
+        }
         // 历史库没跑第一轮时整块仍要显示（告诉值班「还没有数据」），不隐藏
         this.ext = Object.assign({}, this.ext, {
           ready: true, catalog: catalog,
@@ -909,7 +943,7 @@
       async addOverride() {
         const n = this.ext.newRule;
         if (!n.device_id || !n.metric_key) return;
-        const meta = (this.ext.catalog || []).find((m) => m.key === n.metric_key) || {};
+        const meta = this.metricOptions.find((m) => m.key === n.metric_key) || {};
         const base = (this.ext.rules || []).find((r) => r.metric_key === n.metric_key && !r.device_id) || {};
         const body = {
           metric_key: n.metric_key, device_id: n.device_id,

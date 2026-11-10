@@ -190,39 +190,73 @@ function flattenMetrics(d) {
   return out;
 }
 
-/** 单台设备最近一轮能出哪些指标，供大屏下拉与规则表使用 */
+/** 内置静态目录：即使一轮巡检都没跑过，大屏的指标下拉和阈值规则也必须能选到东西 */
+function staticCatalogItems() {
+  return Object.keys(METRIC_CATALOG).map((k) => {
+    const m = METRIC_CATALOG[k];
+    return {
+      key: k, label: m.label, unit: m.unit || '',
+      warn: m.warn == null ? null : m.warn,
+      crit: m.crit == null ? null : m.crit,
+      devices: [], live: false, builtin: true
+    };
+  });
+}
+
+/**
+ * 可用指标目录 = 内置静态目录 ∪ 最近一轮实际采到的指标。
+ * 静态项保证「先配规则、等下一轮采到再生效」；动态项补 textfile 中文名与设备列表。
+ * 历史库不可用 / 空库 / 查询异常时一律回退静态目录，绝不返回空 items —— 空目录会让
+ * 前端 <select> 一个 option 都没有，界面上只剩一个空白小箭头框（看起来像控件坏了）。
+ */
 function catalog() {
-  if (!init()) return { ready: false, items: [] };
+  const items = new Map();
+  for (const it of staticCatalogItems()) items.set(it.key, it);
+  const sorted = () => Array.from(items.values()).sort((a, b) => a.key.localeCompare(b.key));
+  if (!init()) {
+    return { ready: false, items: sorted(), from_static: true,
+      message: '巡检历史库不可用，先展示内置指标目录' };
+  }
   try {
     const r = db.prepare('SELECT MAX(round_no) AS rn FROM it_inspect_history').get();
-    if (!r || !r.rn) return { ready: true, items: [] };
-    const rows = db.prepare(
+    const rows = (r && r.rn) ? db.prepare(
       'SELECT device_id, name, metrics_json FROM it_inspect_history WHERE round_no = ?'
-    ).all(r.rn);
-    const map = new Map();
+    ).all(r.rn) : [];
     for (const row of rows) {
       let obj = {};
       try { obj = JSON.parse(row.metrics_json || '{}') || {}; } catch (e) { continue; }
       for (const [k, v] of Object.entries(obj)) {
         if (num(v) === null) continue;
-        if (!map.has(k)) {
-          const meta = METRIC_CATALOG[k] || {};
-          const tf = k.startsWith('tf.') ? textfileMeta(k.slice(3), rows) : null;
-          map.set(k, {
+        const meta = METRIC_CATALOG[k] || {};
+        const tf = k.startsWith('tf.') ? textfileMeta(k.slice(3), rows) : null;
+        let cur = items.get(k);
+        if (!cur) {
+          cur = {
             key: k, label: meta.label || (tf && tf.name) || k.replace(/^(tf|x)\./, ''),
             unit: meta.unit || (tf && tf.unit) || '',
             warn: meta.warn == null ? null : meta.warn,
             crit: meta.crit == null ? null : meta.crit,
-            devices: []
-          });
+            devices: [], live: false, builtin: false
+          };
+          items.set(k, cur);
+        } else if (tf && !cur.builtin) {
+          // textfile 的中文名/单位来自 # HELP，比按 key 猜出来的名字准
+          if (tf.name) cur.label = tf.name;
+          if (tf.unit) cur.unit = tf.unit;
         }
-        map.get(k).devices.push({ id: row.device_id, name: row.name });
+        cur.live = true;
+        cur.devices.push({ id: row.device_id, name: row.name });
       }
     }
-    return { ready: true, items: Array.from(map.values()).sort((a, b) => a.key.localeCompare(b.key)) };
+    return {
+      ready: true, items: sorted(),
+      from_static: !rows.length,
+      live: Array.from(items.values()).filter((x) => x.live).length,
+      total: items.size
+    };
   } catch (e) {
     lastError = String((e && e.message) || e);
-    return { ready: false, items: [], error: lastError };
+    return { ready: false, items: sorted(), from_static: true, error: lastError };
   }
 }
 
