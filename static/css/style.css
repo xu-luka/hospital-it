@@ -2296,6 +2296,20 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-base); }
   word-break: break-all;
 }
 
+/* 自检弹窗：阈值告警项。和上面的「连接失败」分开显示，
+   避免 ok=true 但有告警时红色错误框把 CPU / 内存 / 扩展采集摘要全遮住。 */
+.chk-reasons {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+}
+.chk-reasons .hd { font-weight: 600; margin-bottom: 4px; }
+.chk-reason { margin-top: 2px; font-size: var(--fs-sm, 12.5px); line-height: 1.6; }
+.chk-reason.is-critical { color: var(--bad); }
+.chk-reason.is-warning { color: var(--warn); }
+.chk-reasons .tip { margin-top: 4px; }
+
 /* 月度柱状图（工作台「近 12 个月新增合同」）。
    原来整块是内联样式（含高度、颜色、圆角），既进不了主题也改不动。 */
 .mbars { display: flex; align-items: flex-end; gap: 6px; height: 150px; overflow-x: auto; }

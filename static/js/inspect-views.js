@@ -151,10 +151,18 @@
               <div v-if="checkResult.hostname">主机名：{{ checkResult.hostname }}</div>
               <div v-if="checkResult.cpu!=null">CPU：{{ checkResult.cpu }}%</div>
               <div v-if="checkResult.mem!=null">内存：{{ checkResult.mem }}%</div>
+              <div v-if="checkResult.reasons && checkResult.reasons.length" class="chk-reasons">
+                <div class="hd">本轮告警项（{{ checkResult.reasons.length }}）</div>
+                <template v-for="(x,i) in checkResult.reasons" :key="'rs'+i">
+                  <div v-if="x.level==='critical'" class="chk-reason is-critical">严重 · {{ x.text }}</div>
+                  <div v-else class="chk-reason is-warning">警告 · {{ x.text }}</div>
+                </template>
+                <div class="muted tip">以上为阈值判定结果，不代表连接失败。</div>
+              </div>
               <div v-if="checkResult.extra" style="margin-top:8px;padding-top:8px;border-top:1px solid var(--line)">
                 <div style="font-weight:600;margin-bottom:4px">扩展采集（windows_exporter）</div>
                 <div>自定义指标（textfile）：<b>{{ checkResult.extra.textfile_count }}</b> 条
-                  <span v-if="checkResult.extra.textfile_names.length" class="muted">· {{ checkResult.extra.textfile_names.join('、') }}</span>
+                  <span v-if="(checkResult.extra.textfile_names || []).length" class="muted">· {{ (checkResult.extra.textfile_names || []).join('、') }}</span>
                 </div>
                 <div class="muted" style="margin-top:2px">
                   磁盘 IO 明细 {{ checkResult.extra.disk_io_rows }} 行 ·
@@ -164,6 +172,7 @@
                 <div v-if="!checkResult.extra.textfile_count" class="muted" style="margin-top:2px">
                   没有采集到 textfile 指标：确认目标机 .prom 文件已放入 textfile_inputs 且指标名以 his_ 开头。
                 </div>
+                <div v-if="checkResult.extra.note" class="muted" style="margin-top:2px">采集说明：{{ checkResult.extra.note }}</div>
               </div>
             </div>
           </div>

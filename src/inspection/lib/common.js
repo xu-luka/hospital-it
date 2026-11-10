@@ -141,6 +141,43 @@ function connectLabelOf(os, authType, dbEngine) {
   return 'SSH 密码';
 }
 
+/**
+ * evaluateResult 产出的 reasons 是 [{level,text}]，**不是字符串数组**。
+ * 任何要拼接 / 渲染它的地方都必须先过这里，否则直接 join 会得到
+ * "[object Object]；[object Object]" —— 2026-11-10 自检弹窗就是这么坏的：
+ * 明明连得上（ok=true），却因为两条阈值告警被塞进 error，红色错误框盖掉了
+ * 主机名 / CPU / 内存 / 扩展采集摘要，运维完全看不到 textfile 有没有生效。
+ */
+function reasonList(reasons) {
+  if (!Array.isArray(reasons)) return [];
+  const out = [];
+  for (const x of reasons) {
+    if (x === null || x === undefined || x === '') continue;
+    if (typeof x === 'string') { out.push({ level: 'warning', text: x }); continue; }
+    if (typeof x === 'object') {
+      const text = String(x.text || x.message || x.name || '');
+      if (!text) continue;
+      out.push({ level: x.level === 'critical' ? 'critical' : 'warning', text: text });
+      continue;
+    }
+    out.push({ level: 'warning', text: String(x) });
+  }
+  return out;
+}
+
+/** 把任意形态的 error 变成可读文本，杜绝 [object Object] 出现在界面上 */
+function errorText(v) {
+  if (v === null || v === undefined || v === '') return '';
+  if (typeof v === 'string') return v;
+  if (v instanceof Error) return String(v.message || v.name || '未知错误');
+  if (typeof v === 'object') {
+    if (v.message) return String(v.message);
+    if (v.text) return String(v.text);
+    try { return JSON.stringify(v); } catch (e) { return '未知错误'; }
+  }
+  return String(v);
+}
+
 module.exports = {
   LEVEL_LABEL,
   levelRank,
@@ -161,5 +198,7 @@ module.exports = {
   psDouble,
   normArray,
   sleep,
-  connectLabelOf
+  connectLabelOf,
+  reasonList,
+  errorText
 };

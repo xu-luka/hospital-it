@@ -31,6 +31,7 @@ const secret = require('../inspection/lib/secret');
 const inspect = require('../inspection/inspect');
 const compare = require('../inspection/compare');
 const scheduler = require('../inspection/scheduler');
+const common = require('../inspection/lib/common');
 
 const router = express.Router();
 // 台账查询要 设备台账.查看；增删改、启停用、测试连接、巡检参数与数据源设置要 设备台账.管理
@@ -205,6 +206,10 @@ router.post('/devices/:id/check', authRequired, async (req, res) => {
     const guard = new Promise((_r, rej) =>
       setTimeout(() => rej(new Error('自检超时（上限 ' + Math.round(timeoutMs / 1000) + ' 秒）')), timeoutMs + 8000));
     const r = await Promise.race([work, guard]);
+    // evaluateResult 的 reasons 是 [{level,text}] 对象数组：先规整再透出。
+    // 以前直接 .join('；') 会变成 "[object Object]；[object Object]"；更糟的是把
+    // 「阈值告警」当成连接错误，红色框盖掉主机名 / CPU / 内存 / 扩展采集摘要。
+    const reasons = common.reasonList(r.reasons);
 
     logAction(req.user, '台账.设备自检', { id: id, name: row.name, ok: !!r.ok }, req.ip);
     res.json({
@@ -213,7 +218,9 @@ router.post('/devices/:id/check', authRequired, async (req, res) => {
       data: {
         id: id, name: row.name, host: row.host, os: row.os,
         ok: !!r.ok, status: r.ok ? r.status : 'error',
-        error: r.error || (r.reasons || []).join('；') || null,
+        error: r.ok ? null
+          : (common.errorText(r.error) || reasons.map((x) => x.text).join('；') || '采集失败'),
+        reasons: reasons,
         cpu: r.metrics ? r.metrics.cpu_percent : null,
         mem: r.metrics ? r.metrics.mem_percent : null,
         hostname: r.metrics ? r.metrics.hostname : null,
@@ -234,7 +241,7 @@ router.post('/devices/:id/check', authRequired, async (req, res) => {
     res.json({
       code: 0,
       message: '自检失败',
-      data: { id: id, name: row.name, ok: false, status: 'error', error: String((e && e.message) || e), durationMs: Date.now() - t0 }
+      data: { id: id, name: row.name, ok: false, status: 'error', error: common.errorText(e), reasons: [], durationMs: Date.now() - t0 }
     });
   }
 });
