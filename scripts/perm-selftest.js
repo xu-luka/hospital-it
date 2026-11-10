@@ -118,7 +118,10 @@ ok(eng.every(perm.isKnownPerm), '工程师默认值全部合法',
 ok(usr.every(perm.isKnownPerm), '普通用户默认值全部合法');
 ok(eng.every((c) => c.indexOf('users.') < 0 && c.indexOf('roles.') < 0 && c.indexOf('logs.') < 0),
   '工程师默认不含 用户管理/角色权限/操作日志');
-eq('普通用户默认 = 工作台 + 工单', usr, ['dashboard.view', 'issues.view', 'issues.create']);
+// 11-04 上线「上线管理」后，普通用户默认多了 launches.view；断言跟着默认值走，
+// 否则每次新增默认可见模块都会在这里假失败一次。
+eq('普通用户默认 = 工作台 + 工单 + 上线管理', usr,
+  ['dashboard.view', 'issues.view', 'issues.create', 'launches.view']);
 ok(eng.indexOf('devices.manage') < 0, '工程师默认不给设备台账写权限（保持改造前的行为）');
 ok(eng.indexOf('inspection.manage') >= 0 && eng.indexOf('netflow.manage') >= 0,
   '工程师默认能触发巡检、能管流量（保持改造前能力）');

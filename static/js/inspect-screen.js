@@ -348,10 +348,13 @@
             </div>
 
             <!-- exporter 通道采到的扩展指标不进 CPU/内存两条进度条，老卡片上就等于「什么都没有」。
-                 这里给 exporter 设备补一行摘要，SSH/WMI 卡片版式保持原样。 -->
-            <div v-if="d.extraHint && d.extraHint.length" class="scr-c-more">
+                 这里给 exporter 设备补一行摘要，SSH/WMI 卡片版式保持原样；
+                 整行是按钮，点开看本轮每一项的名字和值（数据随 status 一起下来，不另发请求）。 -->
+            <button v-if="d.extraHint && d.extraHint.length" type="button" class="scr-c-more"
+              @click="openExtra(d)" :title="'点击查看 ' + d.name + ' 的扩展采集明细'">
               <span v-for="(t, ti) in d.extraHint" :key="ti">{{ t }}</span>
-            </div>
+              <span class="scr-c-more-go">明细 ›</span>
+            </button>
 
             <!-- 版式 D：交换机卡片内联端口条。看设备与看流量在同一张卡片里，
                  不用在「这台机器怎么了」和「哪个口在跑」之间来回切视线。 -->
@@ -415,6 +418,41 @@
         <div><i class="scr-dot"></i>数据每轮巡检后自动更新</div>
         <div>报告目录：{{ data.reportsDir || '-' }}</div>
       </div>
+
+      <!-- 扩展采集明细：只读弹窗。点遮罩 / 右上角 ✕ / Esc 都能关，
+           每 15 秒轮询回来会同步刷新，不会让人对着上一轮的数据发呆。 -->
+      <div v-if="extraDlg" class="sx-dlg-mask" @click.self="closeExtra">
+        <div class="sx-dlg" role="dialog" aria-modal="true" aria-label="扩展采集明细">
+          <div class="sx-dlg-h">
+            <div class="sx-dlg-ht">
+              <div class="sx-dlg-t">扩展采集明细 · {{ extraDlg.name }}</div>
+              <div class="sx-dlg-s">{{ extraDlg.host }}<span v-if="extraDlg.osLabel"> · {{ extraDlg.osLabel }}</span>
+                · {{ extraDlg.detail.meta.hint.join(' · ') }}
+                <span v-if="extraDlg.detail.meta.count"> · {{ extraDlg.detail.meta.sampledTwice ? '两次采样差分' : '单次采样' }}</span>
+              </div>
+            </div>
+            <button type="button" class="sx-dlg-x" @click="closeExtra" title="关闭">✕</button>
+          </div>
+          <div class="sx-dlg-b">
+            <div v-for="(g, gi) in extraDlg.detail.groups" :key="gi" class="sx-dlg-g">
+              <div class="sx-dlg-gt">{{ g.title }}<span>{{ g.rows.length }} 行</span></div>
+              <div class="sx-dlg-scroll">
+                <table class="sx-dlg-tb">
+                  <thead><tr><th v-for="(c, ci) in g.cols" :key="ci">{{ c }}</th></tr></thead>
+                  <tbody>
+                    <tr v-for="(row, ri) in g.rows" :key="ri">
+                      <td v-for="(v, ci) in row" :key="ci" :class="{k: ci === 0}">{{ v }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div v-if="!extraDlg.detail.groups.length" class="sx-dlg-empty">本轮没有采到扩展指标，等下一轮巡检后再看。</div>
+            <div v-if="extraDlg.detail.meta.note" class="sx-dlg-note">采集说明：{{ extraDlg.detail.meta.note }}</div>
+            <div class="sx-dlg-foot">数据来自最近一轮巡检，随大屏自动刷新 · 按 Esc 或点空白处关闭</div>
+          </div>
+        </div>
+      </div>
     </div>`,
 
     data() {
@@ -425,6 +463,8 @@
         full: false,
         busy: false,
         ui: {},
+        // 点「扩展 N 项」打开的只读明细弹窗；存一份快照 + 设备键，轮询回来再对键刷新
+        extraDlg: null,
         // ---- 流量监控（复用巡检大屏这一块屏，不另开页面） ----
         // nf.ready 为 false 时页面完全不出现任何流量元素：
         // 万一服务器没重启、流量接口还是 404，大屏必须照常显示巡检。
@@ -752,6 +792,41 @@
       },
       labelOf(s) { return ST_LABEL[s] || s; },
       pct(v) { return (v === null || v === undefined) ? '—' : v + '%'; },
+
+      /* ---------------- 扩展采集明细弹窗 ---------------- */
+
+      extraKey(d) { return String((d && d.name) || '') + '|' + String((d && d.host) || ''); },
+      openExtra(d) {
+        // 服务没重启时后端还是老版本，status 里没有 extraDetail。点了必须给话，
+        // 不能「什么都没发生」—— 值班同事最烦这种无声按钮。
+        const detail = (d.extraDetail && d.extraDetail.groups && d.extraDetail.meta) ? d.extraDetail : {
+          groups: [{
+            title: '暂未取得明细',
+            cols: ['项目', '当前值'],
+            rows: [
+              ['说明', '服务端尚未下发扩展明细：请在部署根应用本次更新包并重启服务，然后 Ctrl+F5 刷新页面'],
+              ['本轮摘要', (d.extraHint || []).join(' · ')]
+            ]
+          }],
+          meta: { count: 0, sampledTwice: false, gapMs: null, note: '', hint: d.extraHint || [] }
+        };
+        this.extraDlg = {
+          key: this.extraKey(d), name: d.name, host: d.host, osLabel: d.osLabel || '',
+          detail: detail
+        };
+      },
+      closeExtra() { this.extraDlg = null; },
+      /** 15 秒轮询回来后，用同一台设备的新一轮数据替换弹窗快照 */
+      syncExtraDlg() {
+        if (!this.extraDlg) return;
+        const key = this.extraDlg.key;
+        const d = (this.data.devices || []).find((x) => this.extraKey(x) === key);
+        if (!d || !d.extraDetail || !d.extraDetail.groups || !d.extraDetail.meta) return;
+        this.extraDlg = Object.assign({}, this.extraDlg, {
+          name: d.name, host: d.host, osLabel: d.osLabel || '', detail: d.extraDetail
+        });
+      },
+      onKey(e) { if (e.key === 'Escape' && this.extraDlg) this.closeExtra(); },
       barClass(v) {
         if (v === null || v === undefined) return 'ok';
         return v >= 90 ? 'bad' : (v >= 70 ? 'warn' : 'ok');
@@ -1000,6 +1075,7 @@
       async load() {
         try {
           this.data = await api.get('/api/inspection/status');
+          this.syncExtraDlg();
         } catch (e) {
           this.data = Object.assign({}, this.data, { lastError: e.message });
           this.$toast && this.$toast('获取巡检状态失败：' + e.message, 'err');
@@ -1056,6 +1132,7 @@
       }
       this._t = setInterval(this.tick, 1000);
       document.addEventListener('fullscreenchange', this.onFsChange);
+      document.addEventListener('keydown', this.onKey);
     },
 
     beforeUnmount() {
@@ -1064,6 +1141,7 @@
       clearInterval(this._n);
       clearInterval(this._e);
       document.removeEventListener('fullscreenchange', this.onFsChange);
+      document.removeEventListener('keydown', this.onKey);
     }
   };
 

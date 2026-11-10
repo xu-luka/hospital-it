@@ -2813,12 +2813,77 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-base); }
 .scr-bar-row .fill.warn { background: var(--sc-warn); }
 .scr-bar-row .fill.bad { background: var(--sc-bad); }
 .scr-bar-row .v { width: 44px; text-align: right; font-variant-numeric: tabular-nums; color: var(--sc-text); font-family: var(--font-mono); }
+/* 摘要行是按钮：整行可点开扩展明细。button 默认有背景/边框/字体，
+   这里逐项重置，否则卡片里会多出一块浅色方块。 */
 .scr-c-more {
-  display: flex; flex-wrap: wrap; gap: 4px 10px;
-  margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--sc-line);
-  color: var(--sc-muted); font-size: var(--fs-xs);
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px;
+  width: 100%; margin-top: 10px;
+  padding-top: 8px; padding-right: 0; padding-bottom: 0; padding-left: 0;
+  background: transparent; border: 0; border-top: 1px dashed var(--sc-line); border-radius: 0;
+  color: var(--sc-muted); font-family: inherit; font-size: var(--fs-xs);
+  text-align: left; cursor: pointer;
 }
+.scr-c-more:hover { color: var(--sc-text); }
+.scr-c-more:focus-visible { outline: 2px solid var(--sc-accent); outline-offset: 2px; }
 .scr-c-more span { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.scr-c-more-go {
+  margin-left: auto; padding: 1px 7px;
+  border: 1px solid var(--sc-line); border-radius: var(--r-sm);
+  color: var(--sc-muted);
+}
+.scr-c-more:hover .scr-c-more-go { color: var(--sc-accent); border-color: var(--sc-accent); }
+
+/* 扩展采集明细弹窗：只读，深色与大屏一致，不在卡片里就地撑高整个网格 */
+.sx-dlg-mask {
+  position: fixed; inset: 0; z-index: 800;
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px; background: rgba(4, 8, 13, .74);
+}
+.sx-dlg {
+  display: flex; flex-direction: column;
+  width: min(1000px, 100%); max-height: min(82vh, 820px);
+  background: var(--sc-panel); border: 1px solid var(--sc-line); border-radius: var(--r);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, .55); color: var(--sc-text);
+}
+.sx-dlg-h {
+  display: flex; justify-content: space-between; align-items: flex-start; gap: 12px;
+  padding: 16px 20px; border-bottom: 1px solid var(--sc-line);
+}
+.sx-dlg-ht { min-width: 0; }
+.sx-dlg-t { font-size: 16px; font-weight: 700; }
+.sx-dlg-s { margin-top: 4px; color: var(--sc-muted); font-size: var(--fs-sm); line-height: 1.6; }
+.sx-dlg-x {
+  flex-shrink: 0; width: 30px; height: 30px; padding: 0;
+  background: transparent; border: 1px solid var(--sc-line); border-radius: var(--r-sm);
+  color: var(--sc-muted); font-size: 15px; line-height: 1; cursor: pointer;
+}
+.sx-dlg-x:hover { color: var(--sc-text); border-color: var(--sc-accent); }
+.sx-dlg-b { flex: 1; overflow-y: auto; padding: 8px 20px 18px; }
+.sx-dlg-g { margin-top: 14px; }
+.sx-dlg-gt {
+  display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px;
+  font-size: var(--fs-sm); font-weight: 700;
+}
+.sx-dlg-gt span { color: var(--sc-muted); font-size: var(--fs-xs); font-weight: 400; }
+.sx-dlg-scroll { overflow-x: auto; border: 1px solid var(--sc-line); border-radius: var(--r-sm); }
+.sx-dlg-tb {
+  width: 100%; border-collapse: collapse;
+  font-size: var(--fs-sm); font-variant-numeric: tabular-nums;
+}
+.sx-dlg-tb th, .sx-dlg-tb td {
+  padding: 6px 10px; text-align: left; white-space: nowrap;
+  border-bottom: 1px solid var(--sc-line);
+}
+.sx-dlg-tb th { background: var(--sc-surface); color: var(--sc-muted); font-weight: 600; }
+.sx-dlg-tb td.k { color: var(--sc-muted); }
+.sx-dlg-tb tbody tr:last-child td { border-bottom: 0; }
+.sx-dlg-empty { padding: 26px; text-align: center; color: var(--sc-muted); font-size: var(--fs-sm); }
+.sx-dlg-note {
+  margin-top: 14px; padding: 8px 10px;
+  border: 1px dashed var(--sc-line); border-radius: var(--r-sm);
+  color: var(--sc-muted); font-size: var(--fs-xs); line-height: 1.6; word-break: break-word;
+}
+.sx-dlg-foot { margin-top: 12px; text-align: right; color: var(--sc-muted); font-size: var(--fs-xs); }
 
 .scr-reasons { margin-top: 10px; display: grid; gap: 5px; }
 .scr-reason {

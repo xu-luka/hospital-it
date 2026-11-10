@@ -91,30 +91,42 @@ function summarize(results) {
  * 老卡片模板只画 CPU / 内存两条进度条 + 告警，P1 采到的线程、句柄、磁盘 IO、
  * 服务状态、textfile 业务指标全都在 extra 里，运维从大屏上看就是「这台机器只有内存」。
  * 这里把已采到的项压成几个短标签，只给 exporter 通道生成 —— SSH 卡片版式保持原样。
+ * 摘要行可点击打开 extraDetailOf() 生成的明细；两者共用 countExtra()，
+ * 免得「扩展 16 项」点进去只有 12 行这种自己打自己脸的事。
  */
-function extraHintOf(r) {
+function isNum(v) { return typeof v === 'number' && isFinite(v); }
+
+/** 扩展指标个数：extra 里的数值项 + textfile 条数（数组不进递归，单独计） */
+function countExtra(r) {
   const ex = r.extra || {};
-  const m = r.metrics || {};
-  const out = [];
   let n = 0;
   const walk = (o) => {
     if (!o || typeof o !== 'object' || Array.isArray(o)) return;
     for (const v of Object.values(o)) {
-      if (typeof v === 'number' && isFinite(v)) n++;
+      if (isNum(v)) n++;
       else if (v && typeof v === 'object' && !Array.isArray(v)) walk(v);
     }
   };
   walk(ex);
+  n += Array.isArray(ex.textfile) ? ex.textfile.length : 0;
+  return n;
+}
+
+function uptimeVal(sec) {
+  if (!isNum(sec) || sec <= 0) return null;
+  return sec >= 86400 ? (sec / 86400).toFixed(1) + ' 天' : Math.round(sec / 3600) + ' 时';
+}
+
+function extraHintOf(r) {
+  const ex = r.extra || {};
+  const m = r.metrics || {};
+  const out = [];
+  const n = countExtra(r);
   const tfCount = Array.isArray(ex.textfile) ? ex.textfile.length : 0;
-  n += tfCount;  // 数组不进 walk，textfile 业务指标也要算进「扩展项」
   // 按值班时最想看的顺序排，最多 6 个标签，别把卡片撑成两行
   if (n) out.push('扩展 ' + n + ' 项');
   if (m.cores) out.push(m.cores + ' 核');
-  if (m.uptime_sec) {
-    out.push(m.uptime_sec >= 86400
-      ? '开机 ' + (m.uptime_sec / 86400).toFixed(1) + ' 天'
-      : '开机 ' + Math.round(m.uptime_sec / 3600) + ' 时');
-  }
+  if (uptimeVal(m.uptime_sec)) out.push('开机 ' + uptimeVal(m.uptime_sec));
   if (tfCount) out.push('业务指标 ' + tfCount);
   if (Array.isArray(r.services) && r.services.length) {
     out.push('服务 ' + r.services.filter((s) => s.running).length + '/' + r.services.length);
@@ -124,6 +136,147 @@ function extraHintOf(r) {
   if (m.procs) out.push('进程 ' + m.procs);
   if (Array.isArray(m.net) && m.net.length) out.push('网卡 ' + m.net.length);
   return out.length ? out.slice(0, 6) : null;
+}
+
+/* ---------------- 扩展指标明细（点摘要行看到的那张表） ---------------- */
+
+function cell(v) {
+  if (v === null || v === undefined || v === '' || (typeof v === 'number' && !isFinite(v))) return '—';
+  return String(v);
+}
+function valUnit(v, u) { return isNum(v) ? String(v) + (u || '') : null; }
+function mbVal(v) { return valUnit(v, ' MB'); }
+
+/**
+ * 把本轮 exporter 采集结果整理成弹窗能直接渲染的分组表格。
+ * 中文名、单位、格式化全部在这一处定，前端只做 v-for —— 改口径不用两边同步。
+ * 结构：{ groups: [{ title, cols:[], rows:[[]] }], meta: {...} }
+ * 整列都缺指标的列会被丢掉，不摆一排「—」（收集器没开属于正常情况）。
+ */
+function extraDetailOf(r) {
+  const ex = r.extra || {};
+  const m = r.metrics || {};
+  const s = ex.system || {};
+  const mm = ex.memory || {};
+  const groups = [];
+
+  const kv = (title, pairs) => {
+    const rows = [];
+    for (const p of pairs) {
+      if (p[1] !== null && p[1] !== undefined && p[1] !== '') rows.push([p[0], String(p[1])]);
+    }
+    if (rows.length) groups.push({ title: title, cols: ['项目', '当前值'], rows: rows });
+  };
+  const table = (title, cols, rows) => {
+    if (!rows.length) return;
+    const keep = [0];
+    for (let i = 1; i < cols.length; i++) {
+      if (rows.some((row) => row[i] !== '—' && row[i] !== '')) keep.push(i);
+    }
+    groups.push({
+      title: title,
+      cols: keep.map((i) => cols[i]),
+      rows: rows.map((row) => keep.map((i) => row[i]))
+    });
+  };
+
+  kv('本轮采集', [
+    ['CPU 使用率', valUnit(m.cpu_percent, '%')],
+    ['内存使用率', valUnit(m.mem_percent, '%')],
+    ['CPU 核数', valUnit(m.cores, ' 核')],
+    ['开机时长', uptimeVal(m.uptime_sec)],
+    ['采样方式', ex.sampled_twice ? '两次采样差分（CPU / 速率类）' : '单次采样（仅静态指标）'],
+    ['采样间隔', valUnit(ex.gap_ms, ' ms')]
+  ]);
+
+  kv('系统扩展（windows_exporter）', [
+    ['系统线程数', valUnit(s.threads, ' 个')],
+    ['系统句柄数', valUnit(s.handles, ' 个')],
+    ['处理器队列长度', valUnit(s.processor_queue_length, ' 个')],
+    ['上下文切换 / 秒', valUnit(s.context_switches_per_sec, ' 次')],
+    ['系统进程数', valUnit(s.processes, ' 个') || valUnit(m.procs, ' 个')]
+  ]);
+
+  kv('内存扩展', [
+    ['物理内存总量', mbVal(mm.total_mb)],
+    ['已用内存', mbVal(mm.used_mb)],
+    ['可用内存', mbVal(mm.available_mb)],
+    ['缓存', mbVal(mm.cache_mb)],
+    ['已提交内存', mbVal(mm.committed_mb)],
+    ['提交上限', mbVal(mm.commit_limit_mb)],
+    ['提交使用率', valUnit(mm.commit_percent, '%')],
+    ['缺页 / 秒', valUnit(mm.page_faults_per_sec, ' 次')]
+  ]);
+
+  // 磁盘：容量来自 metrics.disks，IOPS / 延迟来自 extra.disks，KB/s 来自 metrics.diskio
+  const baseDisks = Array.isArray(m.disks) ? m.disks : [];
+  const extDisks = Array.isArray(ex.disks) ? ex.disks : [];
+  const ioByDev = {};
+  for (const d of (Array.isArray(m.diskio) ? m.diskio : [])) ioByDev[String(d.dev || '')] = d;
+  const diskKeys = [];
+  for (const d of baseDisks.concat(extDisks)) {
+    const k = String(d.mount || '');
+    if (k && diskKeys.indexOf(k) < 0) diskKeys.push(k);
+  }
+  table('磁盘（容量 / IOPS / 速率）',
+    ['卷', '容量', '已用', '使用率', '读 IOPS', '写 IOPS', '读延迟 ms', '写延迟 ms', '读 KB/s', '写 KB/s'],
+    diskKeys.map((k) => {
+      const b = baseDisks.find((d) => String(d.mount || '') === k) || {};
+      const e = extDisks.find((d) => String(d.mount || '') === k) || {};
+      const io = ioByDev[k] || {};
+      return [
+        k, cell(mbVal(b.size_mb)), cell(mbVal(b.used_mb)), cell(valUnit(b.use_percent, '%')),
+        cell(e.read_iops), cell(e.write_iops), cell(e.read_latency_ms), cell(e.write_latency_ms),
+        cell(io.r_kbps), cell(io.w_kbps)
+      ];
+    }));
+
+  // 网卡：速率来自 metrics.net，错包 / 带宽 / 利用率来自 extra.net
+  const baseNet = Array.isArray(m.net) ? m.net : [];
+  const extNet = Array.isArray(ex.net) ? ex.net : [];
+  const netKeys = [];
+  for (const n of baseNet.concat(extNet)) {
+    const k = String(n.iface || '');
+    if (k && netKeys.indexOf(k) < 0) netKeys.push(k);
+  }
+  table('网卡（速率 / 错包 / 带宽）',
+    ['接口', '接收 KB/s', '发送 KB/s', '收错包', '发错包', '收丢包', '发丢包', '标称带宽', '利用率'],
+    netKeys.map((k) => {
+      const b = baseNet.find((n) => String(n.iface || '') === k) || {};
+      const e = extNet.find((n) => String(n.iface || '') === k) || {};
+      const bw = isNum(e.bandwidth_bps) ? (e.bandwidth_bps / 1000000).toFixed(0) + ' Mbps' : null;
+      return [
+        k, cell(b.rx_kbps), cell(b.tx_kbps), cell(e.rx_errors), cell(e.tx_errors),
+        cell(e.rx_drops), cell(e.tx_drops), cell(bw), cell(valUnit(e.util_pct, '%'))
+      ];
+    }));
+
+  const svcs = Array.isArray(r.services) ? r.services : [];
+  table('服务检查', ['服务名', '状态', '说明'], svcs.map((x) => [
+    cell(x.name), x.running ? '运行中' : '未运行', cell(x.detail)
+  ]));
+
+  const tf = Array.isArray(ex.textfile) ? ex.textfile : [];
+  table('业务指标（textfile）', ['指标', '当前值', '单位', '采集键'], tf.map((t) => {
+    const labels = t.labels || {};
+    const ks = Object.keys(labels).sort();
+    const suffix = ks.length ? '（' + ks.map((k) => labels[k]).join(' / ') + '）' : '';
+    return [
+      cell(t.name || t.metric || t.key) + suffix,
+      cell(t.value), cell(t.unit), cell(t.key)
+    ];
+  }));
+
+  return {
+    groups: groups,
+    meta: {
+      count: countExtra(r),
+      sampledTwice: !!ex.sampled_twice,
+      gapMs: isNum(ex.gap_ms) ? ex.gap_ms : null,
+      note: (r.ok && r.note) ? r.note : '',
+      hint: extraHintOf(r) || []
+    }
+  };
 }
 
 function buildStatus() {
@@ -148,7 +301,10 @@ function buildStatus() {
       cpu: r.metrics ? r.metrics.cpu_percent : null,
       mem: r.metrics ? r.metrics.mem_percent : null,
       hostname: r.metrics ? r.metrics.hostname : (r.hw ? r.hw.model : null),
-      extraHint: r.channel === 'exporter' ? extraHintOf(r) : null
+      extraHint: r.channel === 'exporter' ? extraHintOf(r) : null,
+      // 点摘要行要立刻看到明细：随 status 一起下发，不另开接口、不额外等一次请求。
+      // 只给 exporter 生成，SSH/WMI 的响应体一个字节都不多。
+      extraDetail: r.channel === 'exporter' ? extraDetailOf(r) : null
     })),
     // 阶段 5 新增字段，旧消费者忽略即可（向后兼容）
     workerHealthy: state.workerHealthy,
@@ -492,7 +648,8 @@ async function secretWarmup() {
 
 module.exports = {
   start, stop, round, runOnce: round,
-  buildStatus, summarize, reloadConfig, loadAndValidate, applyConfig,
+  buildStatus, summarize, extraHintOf, extraDetailOf, countExtra,
+  reloadConfig, loadAndValidate, applyConfig,
   health, isRunning,
   setDeviceSource, setOnRoundDone, setRunner,
   collector, history, workerHealth, historyStats,
