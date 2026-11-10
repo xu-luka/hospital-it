@@ -88,6 +88,128 @@
         <div class="scr-stat e"><div class="num">{{ summary.error }}</div><div class="lbl">失败</div></div>
       </div>
 
+      <!-- P2/P3 扩展区块：按定稿插在统计卡正下方，下面的设备分区与流量监控顺序一律不动。
+           ext.ready 为 false 时整块隐藏 —— 历史库不可用、接口 404（服务没重启）都不能让大屏白屏。 -->
+      <div v-if="canInspect && ext.ready" class="sx-wrap">
+        <div class="sx-head">
+          <div>
+            <div class="sx-title">扩展监控与告警</div>
+            <div class="sx-sub">第 {{ ext.latest.roundNo || '—' }} 轮 · {{ ext.latest.checkedAt || '暂无历史' }}
+              · 业务指标 {{ bizCards.length }} 项 · 可用指标 {{ ext.catalog.length }} 项</div>
+          </div>
+          <div style="flex:1"></div>
+          <span class="sx-chip" :class="{bad: ext.summary.critical > 0}">严重 {{ ext.summary.critical }}</span>
+          <span class="sx-chip" :class="{warn: ext.summary.unacked > 0}">未确认 {{ ext.summary.unacked }}</span>
+          <button class="scr-btn" @click="loadExt">刷新</button>
+          <button v-if="canOperate" class="scr-btn" @click="ext.editing = !ext.editing">{{ ext.editing ? '完成编辑' : '阈值规则' }}</button>
+        </div>
+
+        <div class="sx-cards">
+          <div v-for="c in bizCards" :key="c.key" class="sx-card" :class="c.cls">
+            <div class="k" :title="c.key">{{ c.label }}</div>
+            <div class="v">{{ c.value }}<s v-if="c.unit">{{ c.unit }}</s></div>
+            <div class="d">{{ c.device }}</div>
+          </div>
+          <div v-if="!bizCards.length" class="sx-empty">暂无 textfile 业务指标：目标机 .prom 放入 textfile_inputs 后，下一轮巡检会出现在这里</div>
+        </div>
+
+        <div class="sx-body">
+          <div class="sx-panel">
+            <div class="sx-panel-h">
+              <b>历史趋势</b>
+              <select v-model="ext.deviceId" class="sx-sel" @change="loadSeries">
+                <option v-for="d in extDevices" :key="d.id" :value="d.id">{{ d.name }}</option>
+              </select>
+              <select v-model="ext.key" class="sx-sel wide" @change="loadSeries">
+                <option v-for="m in ext.catalog" :key="m.key" :value="m.key">{{ m.label }}</option>
+              </select>
+              <span class="sx-ranges">
+                <span v-for="r in ext.ranges" :key="r.key" class="opt"
+                  :class="{active: ext.range === r.key}" @click="setExtRange(r.key)">{{ r.label }}</span>
+              </span>
+            </div>
+            <div class="sx-chart-wrap">
+              <svg v-if="chart" class="sx-chart" viewBox="0 0 600 180" preserveAspectRatio="xMidYMid meet">
+                <line v-for="(g,i) in chart.grid" :key="'g'+i" :x1="chart.L" :x2="600-chart.R"
+                  :y1="g.y" :y2="g.y" stroke="#243247" stroke-width="1"/>
+                <text v-for="(g,i) in chart.grid" :key="'t'+i" :x="chart.L-6" :y="g.y+4"
+                  fill="#8a99ac" font-size="10" text-anchor="end">{{ g.v }}</text>
+                <polygon v-if="chart.band" :points="chart.band" fill="#4f8ef722" stroke="none"/>
+                <polyline v-if="chart.line" :points="chart.line" fill="none" stroke="#7cc4ff"
+                  stroke-width="2" vector-effect="non-scaling-stroke"/>
+                <line v-if="chart.yWarn !== null" :x1="chart.L" :x2="600-chart.R" :y1="chart.yWarn" :y2="chart.yWarn"
+                  stroke="#e5a54b" stroke-width="1" stroke-dasharray="5 4"/>
+                <line v-if="chart.yCrit !== null" :x1="chart.L" :x2="600-chart.R" :y1="chart.yCrit" :y2="chart.yCrit"
+                  stroke="#ef6b73" stroke-width="1" stroke-dasharray="5 4"/>
+                <text v-for="(t,i) in chart.xTicks" :key="'x'+i" :x="t.x" :y="174"
+                  fill="#8a99ac" font-size="10" text-anchor="middle">{{ t.label }}</text>
+              </svg>
+              <div v-else class="sx-empty">该设备此指标还没有足够的历史点（每轮巡检落一条，至少 2 点才成线）</div>
+            </div>
+            <div v-if="ext.series.items && ext.series.items.length" class="sx-kpis">
+              <span>最新 <b>{{ ext.series.items[ext.series.items.length-1].value }}{{ ext.series.unit }}</b></span>
+              <span>均值 <b>{{ ext.series.avg }}{{ ext.series.unit }}</b></span>
+              <span>峰值 <b>{{ ext.series.max }}{{ ext.series.unit }}</b></span>
+              <span>{{ ext.series.count }} 点 · {{ ext.series.label }}</span>
+            </div>
+          </div>
+
+          <div class="sx-panel">
+            <div class="sx-panel-h"><b>活跃告警</b><span>{{ ext.events.length }} 条未恢复</span></div>
+            <div class="sx-events">
+              <div v-for="e in ext.events" :key="e.id" class="sx-event" :class="e.level">
+                <div class="t">{{ e.message }}</div>
+                <div class="m">{{ e.first_at }} · 连续 {{ e.hits }} 轮 ·
+                  {{ e.status === 'acked' ? '已确认 ' + e.acked_by : '未确认' }}</div>
+                <button v-if="canOperate && e.status === 'open'" class="sx-ack" @click="ackEvent(e.id)">确认</button>
+              </div>
+              <div v-if="!ext.events.length" class="sx-empty">暂无活跃告警</div>
+            </div>
+          </div>
+        </div>
+
+        <div v-if="ext.editing && canOperate" class="sx-rules">
+          <div class="sx-add">
+            <span class="k">新增按设备覆盖</span>
+            <select v-model="ext.newRule.device_id" class="sx-sel">
+              <option v-for="d in extDevices" :key="d.id" :value="d.id">{{ d.name }}</option>
+            </select>
+            <select v-model="ext.newRule.metric_key" class="sx-sel wide">
+              <option v-for="m in ext.catalog" :key="m.key" :value="m.key">{{ m.label }}</option>
+            </select>
+            <span class="k">警告</span><input class="sx-ipt" type="number" v-model.number="ext.newRule.warn">
+            <span class="k">严重</span><input class="sx-ipt" type="number" v-model.number="ext.newRule.crit">
+            <button class="scr-btn primary" @click="addOverride">添加</button>
+          </div>
+          <table class="sx-tbl">
+            <thead><tr>
+              <th>指标</th><th>作用范围</th><th>方向</th><th>警告线</th><th>严重线</th>
+              <th>连续轮次</th><th>冷却(分)</th><th>启用</th><th></th>
+            </tr></thead>
+            <tbody>
+              <tr v-for="r in ext.rules" :key="r.id">
+                <td :title="r.metric_key">{{ r.label || r.metric_key }}</td>
+                <td>{{ r.device_id ? (r.device_name || '设备 ' + r.device_id) : '全局' }}</td>
+                <td>{{ r.direction === 'down' ? '低于' : '超过' }}</td>
+                <template v-if="ext.ruleDraft[r.id]">
+                  <td><input class="sx-ipt" type="number" v-model.number="ext.ruleDraft[r.id].warn"></td>
+                  <td><input class="sx-ipt" type="number" v-model.number="ext.ruleDraft[r.id].crit"></td>
+                  <td><input class="sx-ipt" type="number" v-model.number="ext.ruleDraft[r.id].consecutive"></td>
+                  <td><input class="sx-ipt" type="number" v-model.number="ext.ruleDraft[r.id].cooldown_min"></td>
+                  <td><input type="checkbox" v-model="ext.ruleDraft[r.id].enabled"></td>
+                  <td>
+                    <button class="sx-ack" @click="saveRule(r)">保存</button>
+                    <button v-if="r.device_id" class="sx-ack del" @click="delRule(r)">删除</button>
+                  </td>
+                </template>
+                <td v-else colspan="6" class="sx-err">草稿未就绪</td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="sx-hint">改完规则，阈值线、告警判定与下一轮的事件会一起重算；已有事件不受影响。全局规则只能改/停用，不能删。</div>
+        </div>
+      </div>
+
       <div class="scr-flow" :class="{'with-aside': nf.ready && nfMode==='aside'}">
       <div class="scr-flow-main">
 
@@ -294,7 +416,22 @@
           { key: 'band', label: '流量带' },
           { key: 'aside', label: '侧栏' },
           { key: 'section', label: '分区' }
-        ]
+        ],
+        // ---- P2/P3 扩展区块：历史趋势 + textfile 业务卡 + 阈值告警 ----
+        // 与 nf 一样独立降级：任何一个接口 404 / 历史库没准备好，整块一起隐藏。
+        ext: {
+          ready: false, error: '', editing: false, busy: false,
+          catalog: [], latest: { ready: false, roundNo: 0, checkedAt: null, items: [] },
+          series: { ready: false, items: [], label: '', labelCn: '', unit: '', min: null, max: null, avg: null, count: 0 },
+          ranges: [
+            { key: '1h', label: '1 时' }, { key: '6h', label: '6 时' },
+            { key: '24h', label: '24 时' }, { key: '7d', label: '7 天' }
+          ],
+          range: '24h', deviceId: 0, key: 'cpu_percent',
+          events: [], rules: [], ruleDraft: {},
+          summary: { open: 0, unacked: 0, critical: 0 },
+          newRule: { device_id: 0, metric_key: 'cpu_percent', warn: 80, crit: 95 }
+        }
       };
     },
 
@@ -477,10 +614,112 @@
       sparkArea() {
         const p = this.sparkPts;
         return p ? ('0,100 ' + p + ' 100,100') : '';
+      },
+
+      /* ---------------- P2/P3：扩展区块 ---------------- */
+
+      extDevices() {
+        const fromDash = (this.data.devices || [])
+          .filter((d) => d && d.id)
+          .map((d) => ({ id: d.id, name: d.name }));
+        if (fromDash.length) return fromDash;
+        return (this.ext.latest.items || [])
+          .filter((d) => d && d.deviceId)
+          .map((d) => ({ id: d.deviceId, name: d.name }));
+      },
+      /** textfile 业务指标卡：同一指标多台设备时取第一台有值的，最多 8 张 */
+      bizCards() {
+        const out = [];
+        const seen = new Set();
+        const cat = {};
+        for (const m of (this.ext.catalog || [])) cat[m.key] = m;
+        for (const d of (this.ext.latest.items || [])) {
+          for (const k of Object.keys(d.metrics || {})) {
+            if (k.indexOf('tf.') !== 0 || seen.has(k)) continue;
+            if (k.indexOf('tf.his_collector_timestamp') === 0) continue; // 时间戳是技术位，不占卡片
+            const v = Number(d.metrics[k]);
+            if (!Number.isFinite(v)) continue;
+            seen.add(k);
+            const meta = cat[k] || {};
+            const rule = this.ruleFor(k, d.deviceId);
+            let cls = '';
+            if (rule) {
+              const w = Number(rule.warn), c = Number(rule.crit);
+              const down = rule.direction === 'down';
+              if (down && Number.isFinite(c) && v < c) cls = 'bad';
+              else if (down && Number.isFinite(w) && v < w) cls = 'warn';
+              else if (!down && Number.isFinite(c) && v >= c) cls = 'bad';
+              else if (!down && Number.isFinite(w) && v >= w) cls = 'warn';
+            }
+            out.push({ key: k, label: meta.label || k.slice(3), value: v,
+              unit: meta.unit || '', device: d.name, cls: cls });
+          }
+        }
+        return out.slice(0, 8);
+      },
+      currentRule() { return this.ruleFor(this.ext.key, this.ext.deviceId); },
+      /** SVG 折线 + min/max 带 + 阈值线。阈值线读规则表，改规则立刻跟着动 */
+      chart() {
+        const items = (this.ext.series && this.ext.series.items) || [];
+        if (items.length < 2) return null;
+        const W = 600, H = 180, L = 52, R = 12, T = 12, B = 30;
+        const iw = W - L - R, ih = H - T - B;
+        let mn = Infinity, mx = -Infinity;
+        for (const it of items) {
+          mn = Math.min(mn, Number(it.min)); mx = Math.max(mx, Number(it.max));
+        }
+        if (!Number.isFinite(mn) || !Number.isFinite(mx)) return null;
+        const rule = this.currentRule;
+        if (rule) {
+          for (const v of [Number(rule.warn), Number(rule.crit)]) {
+            if (Number.isFinite(v)) { mn = Math.min(mn, v); mx = Math.max(mx, v); }
+          }
+        }
+        if (mx === mn) { mn -= 1; mx += 1; }
+        const pad = (mx - mn) * 0.1; mn -= pad; mx += pad;
+        const y = (v) => T + ih - (v - mn) / (mx - mn) * ih;
+        const x = (i) => L + (items.length === 1 ? iw / 2 : i / (items.length - 1) * iw);
+        const line = items.map((it, i) => x(i).toFixed(2) + ',' + y(Number(it.value)).toFixed(2)).join(' ');
+        const up = items.map((it, i) => x(i).toFixed(2) + ',' + y(Number(it.max)).toFixed(2));
+        const dn = items.slice().reverse().map((it, j) => {
+          const i = items.length - 1 - j;
+          return x(i).toFixed(2) + ',' + y(Number(it.min)).toFixed(2);
+        });
+        const grid = [];
+        for (let k = 0; k <= 4; k++) {
+          const v = mn + (mx - mn) * k / 4;
+          grid.push({ y: y(v).toFixed(2), v: Math.round(v * 10) / 10 });
+        }
+        const xTicks = [];
+        for (let k = 0; k <= 4; k++) {
+          const idx = Math.round((items.length - 1) * k / 4);
+          const d = new Date(items[idx].ts);
+          const p = (n) => String(n).padStart(2, '0');
+          xTicks.push({
+            x: x(idx).toFixed(2),
+            label: this.ext.range === '7d'
+              ? (d.getMonth() + 1) + '/' + d.getDate()
+              : p(d.getHours()) + ':' + p(d.getMinutes())
+          });
+        }
+        const yRule = (v) => (Number.isFinite(v) && v >= mn && v <= mx) ? y(v).toFixed(2) : null;
+        return {
+          L: L, R: R, grid: grid, xTicks: xTicks, line: line, band: up.concat(dn).join(' '),
+          yWarn: rule ? yRule(Number(rule.warn)) : null,
+          yCrit: rule ? yRule(Number(rule.crit)) : null
+        };
       }
     },
 
     methods: {
+      /** 当前指标生效的规则：按设备覆盖优先于全局。
+          必须放 methods —— computed 是无参 getter，写成带参方法会在渲染期抛
+          "this.ruleFor is not a function"，整块大屏直接白屏。 */
+      ruleFor(key, deviceId) {
+        const rs = (this.ext.rules || []).filter((r) => r.metric_key === key && r.enabled);
+        return rs.find((r) => Number(r.device_id) === Number(deviceId))
+          || rs.find((r) => Number(r.device_id) === 0) || null;
+      },
       labelOf(s) { return ST_LABEL[s] || s; },
       pct(v) { return (v === null || v === undefined) ? '—' : v + '%'; },
       barClass(v) {
@@ -594,9 +833,102 @@
         }
       },
 
+      /* ---------------- P2/P3：扩展区块取数与交互 ---------------- */
+
+      /** 单个接口失败只让那一块空着，不能让整个扩展区（更不能有整个大屏）消失 */
+      async safeGet(url, fallback) {
+        try { return await api.get(url); } catch (e) { return fallback; }
+      },
+      async loadExt() {
+        const [cat, lat, ev, sum, rules] = await Promise.all([
+          this.safeGet('/api/inspection/metrics/catalog', { items: [] }),
+          this.safeGet('/api/inspection/metrics/latest', { ready: false, items: [] }),
+          this.safeGet('/api/inspection/alerts/events?status=unresolved&limit=50', { items: [] }),
+          this.safeGet('/api/inspection/alerts/summary', { open: 0, unacked: 0, critical: 0 }),
+          this.safeGet('/api/inspection/alerts/rules', { items: [] })
+        ]);
+        const catalog = (cat && cat.items) || [];
+        const ruleList = (rules && rules.items) || [];
+        const draft = {};
+        for (const r of ruleList) {
+          draft[r.id] = { warn: r.warn, crit: r.crit, consecutive: r.consecutive,
+            cooldown_min: r.cooldown_min, enabled: !!r.enabled };
+        }
+        const devs = (this.data.devices || []).filter((d) => d && d.id);
+        if (!this.ext.deviceId && devs.length) this.ext.deviceId = devs[0].id;
+        if (!this.ext.newRule.device_id && devs.length) this.ext.newRule.device_id = devs[0].id;
+        if (catalog.length && !catalog.some((m) => m.key === this.ext.key)) this.ext.key = catalog[0].key;
+        // 历史库没跑第一轮时整块仍要显示（告诉值班「还没有数据」），不隐藏
+        this.ext = Object.assign({}, this.ext, {
+          ready: true, catalog: catalog,
+          latest: lat || { ready: false, roundNo: 0, checkedAt: null, items: [] },
+          events: (ev && ev.items) || [],
+          summary: sum || { open: 0, unacked: 0, critical: 0 },
+          rules: ruleList, ruleDraft: draft
+        });
+        await this.loadSeries();
+      },
+      async loadSeries() {
+        if (!this.ext.deviceId || !this.ext.key) return;
+        try {
+          this.ext.series = await api.get('/api/inspection/series?deviceId=' + this.ext.deviceId
+            + '&key=' + encodeURIComponent(this.ext.key) + '&range=' + this.ext.range);
+        } catch (e) {
+          this.ext.series = { ready: false, items: [], label: '', unit: '',
+            min: null, max: null, avg: null, count: 0, error: (e && e.message) || String(e) };
+        }
+      },
+      setExtRange(k) { this.ext.range = k; this.loadSeries(); },
+      async ackEvent(id) {
+        try {
+          await api.post('/api/inspection/alerts/events/' + id + '/ack', {});
+          this.$toast && this.$toast('已确认', 'ok');
+          await this.loadExt();
+        } catch (e) { this.$toast && this.$toast('确认失败：' + e.message, 'err'); }
+      },
+      async saveRule(r) {
+        const d = this.ext.ruleDraft[r.id];
+        if (!d) return;
+        const body = Object.assign({}, r, {
+          warn: d.warn, crit: d.crit, consecutive: d.consecutive,
+          cooldown_min: d.cooldown_min, enabled: d.enabled ? 1 : 0
+        });
+        try {
+          await api.post('/api/inspection/alerts/rules', body);
+          this.$toast && this.$toast('规则已保存，阈值线已更新', 'ok');
+          await this.loadExt();
+        } catch (e) { this.$toast && this.$toast('保存失败：' + e.message, 'err'); }
+      },
+      async delRule(r) {
+        try {
+          await api.del('/api/inspection/alerts/rules/' + r.id);
+          this.$toast && this.$toast('覆盖规则已删除，恢复使用全局值', 'ok');
+          await this.loadExt();
+        } catch (e) { this.$toast && this.$toast('删除失败：' + e.message, 'err'); }
+      },
+      async addOverride() {
+        const n = this.ext.newRule;
+        if (!n.device_id || !n.metric_key) return;
+        const meta = (this.ext.catalog || []).find((m) => m.key === n.metric_key) || {};
+        const base = (this.ext.rules || []).find((r) => r.metric_key === n.metric_key && !r.device_id) || {};
+        const body = {
+          metric_key: n.metric_key, device_id: n.device_id,
+          label: meta.label || '', unit: meta.unit || '',
+          direction: base.direction || 'up', mode: base.mode || 'value',
+          warn: n.warn, crit: n.crit,
+          consecutive: base.consecutive || 1, cooldown_min: base.cooldown_min || 30, enabled: 1
+        };
+        try {
+          await api.post('/api/inspection/alerts/rules', body);
+          this.$toast && this.$toast('已添加按设备覆盖', 'ok');
+          await this.loadExt();
+        } catch (e) { this.$toast && this.$toast('添加失败：' + e.message, 'err'); }
+      },
+
       refreshAll() {
         if (this.canInspect) this.load();
         if (this.canNetflow) this.loadNetflow();
+        if (this.canInspect) this.loadExt();
       },
 
       setNfMode(k) { this.nfMode = k; this.saveNfPref(); },
@@ -673,6 +1005,9 @@
       if (this.canInspect) {
         this.load();
         this._p = setInterval(this.load, 15000);
+        // 历史趋势按轮次落库（默认 60 秒一轮），1 分钟跟一次足够，别跟着 15 秒空转
+        this.loadExt();
+        this._e = setInterval(this.loadExt, 60000);
       }
       if (this.canNetflow) {
         this.loadNetflow();
@@ -687,6 +1022,7 @@
       clearInterval(this._t);
       clearInterval(this._p);
       clearInterval(this._n);
+      clearInterval(this._e);
       document.removeEventListener('fullscreenchange', this.onFsChange);
     }
   };

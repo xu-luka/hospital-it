@@ -34,6 +34,39 @@ router.get('/trend', authRequired, (req, res) => {
   });
 });
 
+/* ---------------- P2：扩展指标目录、最近一轮、任意指标趋势 ---------------- */
+/* 这三个接口都只读，且历史库不可用时必须静默降级为空数据 —— 大屏常驻投屏，
+   不能因为「还没跑第一轮」或历史库被占用就弹出一堆红色报错。 */
+
+/** 可用指标目录（含 textfile 动态指标的中文名）：GET /api/inspection/metrics/catalog */
+router.get('/metrics/catalog', authRequired, (req, res) => {
+  if (!history.available()) {
+    return res.json({ code: 0, data: { ready: false, items: [], message: '巡检历史库不可用' } });
+  }
+  res.json({ code: 0, data: history.catalog() });
+});
+
+/** 最近一轮每台的完整指标：GET /api/inspection/metrics/latest */
+router.get('/metrics/latest', authRequired, (req, res) => {
+  if (!history.available()) {
+    return res.json({ code: 0, data: { ready: false, roundNo: 0, items: [] } });
+  }
+  res.json({ code: 0, data: history.latestRound() });
+});
+
+/** 单设备单指标序列：GET /api/inspection/series?deviceId=1&key=cpu_percent&range=24h */
+router.get('/series', authRequired, (req, res) => {
+  if (!history.available()) {
+    return res.json({ code: 0, data: { ready: false, items: [], message: '巡检历史库不可用' } });
+  }
+  const range = String(req.query.range || '24h');
+  if (!history.RANGES[range]) {
+    return res.status(400).json({ code: 400, message: '不支持的时间范围：' + range });
+  }
+  const key = String(req.query.key || 'cpu_percent').slice(0, 200);
+  res.json({ code: 0, data: history.seriesFor(Number(req.query.deviceId || 0), key, range) });
+});
+
 /** 各设备可用率（默认近 7 天）：GET /api/inspection/availability?days=7 */
 router.get('/availability', authRequired, (req, res) => {
   if (!history.available()) {

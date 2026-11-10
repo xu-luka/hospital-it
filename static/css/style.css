@@ -3851,3 +3851,98 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-base); }
 .ev-user { color: var(--muted); font-size: var(--fs-xs); }
 .ev-reason { color: var(--muted); flex: 1 1 100%; padding-left: 2px; }
 .req { color: var(--bad); }
+
+/* ============ P2/P3 扩展监控与告警（监控大屏，插在统计卡下方） ============
+   沿用大屏深色 --sc-* 变量，类名 sx- 独立前缀，不污染浅色业务页面。
+   所有块级尺寸都能在 1440 投屏与 1920 大屏下自适应，不写死像素宽度。 */
+.sx-wrap {
+  margin: 14px 0 4px; padding: 12px 14px 14px;
+  background: var(--sc-panel); border: 1px solid var(--sc-line);
+  border-radius: var(--r);
+}
+.sx-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.sx-title { color: var(--sc-text); font-size: 15px; font-weight: 700; letter-spacing: .04em; }
+.sx-sub { color: var(--sc-muted); font-size: var(--fs-xs); margin-top: 3px; }
+.sx-chip {
+  font-size: var(--fs-xs); color: var(--sc-muted);
+  border: 1px solid var(--sc-line); border-radius: 999px;
+  padding: 3px 10px; white-space: nowrap;
+}
+.sx-chip.warn { color: var(--sc-warn); border-color: rgba(251,191,36,.45); background: rgba(251,191,36,.10); }
+.sx-chip.bad { color: var(--sc-bad); border-color: rgba(239,107,115,.45); background: rgba(239,107,115,.10); }
+
+.sx-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 12px; }
+.sx-card {
+  background: var(--sc-surface); border: 1px solid var(--sc-line);
+  border-left: 3px solid var(--sc-accent); border-radius: var(--r-sm);
+  padding: 9px 12px; min-width: 0;
+}
+.sx-card.warn { border-left-color: var(--sc-warn); }
+.sx-card.bad { border-left-color: var(--sc-bad); background: rgba(239,107,115,.08); }
+.sx-card .k { color: var(--sc-muted); font-size: var(--fs-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sx-card .v {
+  color: var(--sc-text); font-size: 23px; font-weight: 800; line-height: 1.25;
+  font-variant-numeric: tabular-nums; font-family: var(--font-mono);
+}
+.sx-card.warn .v { color: var(--sc-warn); }
+.sx-card.bad .v { color: var(--sc-bad); }
+.sx-card .v s { text-decoration: none; font-size: 11px; font-weight: 500; color: var(--sc-muted); margin-left: 4px; }
+.sx-card .d { color: var(--sc-muted); font-size: var(--fs-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sx-empty { color: var(--sc-muted); font-size: var(--fs-xs); padding: 14px 4px; line-height: 1.6; }
+
+.sx-body { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(260px, 1fr); gap: 12px; }
+@media (max-width: 1100px) { .sx-body { grid-template-columns: 1fr; } }
+.sx-panel { background: var(--sc-surface); border: 1px solid var(--sc-line); border-radius: var(--r-sm); padding: 10px 12px; min-width: 0; }
+.sx-panel-h {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  color: var(--sc-muted); font-size: var(--fs-sm); margin-bottom: 8px;
+}
+.sx-panel-h b { color: var(--sc-accent); font-weight: 700; }
+.sx-panel-h > span:last-child { margin-left: auto; }
+.sx-sel, .sx-ipt {
+  background: var(--sc-panel); color: var(--sc-text);
+  border: 1px solid var(--sc-line); border-radius: 4px;
+  font-size: var(--fs-xs); padding: 3px 6px; max-width: 190px;
+}
+.sx-sel.wide { max-width: 230px; }
+.sx-ipt { width: 66px; text-align: right; font-family: var(--font-mono); }
+.sx-ranges { display: inline-flex; gap: 2px; margin-left: auto; }
+.sx-ranges .opt {
+  cursor: pointer; padding: 3px 8px; border-radius: 4px;
+  color: var(--sc-muted); font-size: var(--fs-xs); white-space: nowrap;
+}
+.sx-ranges .opt:hover { color: var(--sc-text); background: var(--sc-panel); }
+.sx-ranges .opt.active { color: var(--on-accent); background: var(--sc-accent); font-weight: 700; }
+.sx-chart-wrap { background: var(--sc-panel); border-radius: 4px; min-height: 180px; }
+.sx-chart { display: block; width: 100%; height: 180px; }
+.sx-kpis { display: flex; gap: 16px; flex-wrap: wrap; color: var(--sc-muted); font-size: var(--fs-xs); margin-top: 8px; }
+.sx-kpis b { color: var(--sc-text); font-family: var(--font-mono); }
+
+.sx-events { max-height: 232px; overflow-y: auto; }
+.sx-event {
+  position: relative; padding: 8px 10px; margin-bottom: 6px;
+  background: var(--sc-panel); border-left: 3px solid var(--sc-warn);
+  border-radius: var(--r-sm); font-size: var(--fs-xs);
+}
+.sx-event.critical { border-left-color: var(--sc-bad); }
+.sx-event .t { color: var(--sc-text); line-height: 1.5; padding-right: 52px; }
+.sx-event .m { color: var(--sc-muted); margin-top: 3px; }
+.sx-ack {
+  position: absolute; right: 8px; top: 8px; cursor: pointer;
+  color: var(--sc-accent); background: transparent;
+  border: 1px solid var(--sc-line); border-radius: 4px;
+  font-size: var(--fs-xs); padding: 2px 8px;
+}
+.sx-ack:hover { border-color: var(--sc-accent); }
+.sx-ack.del { color: var(--sc-bad); position: static; margin-left: 4px; }
+
+.sx-rules { margin-top: 12px; border-top: 1px solid var(--sc-line); padding-top: 10px; }
+.sx-add { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+.sx-add .k { color: var(--sc-muted); font-size: var(--fs-xs); }
+.sx-tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-xs); }
+.sx-tbl th { color: var(--sc-muted); font-weight: 600; text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--sc-line); white-space: nowrap; }
+.sx-tbl td { color: var(--sc-text); padding: 5px 8px; border-bottom: 1px dashed var(--sc-line); white-space: nowrap; }
+.sx-tbl tr:last-child td { border-bottom: none; }
+.sx-tbl .sx-ipt { width: 62px; }
+.sx-err { color: var(--sc-bad); }
+.sx-hint { color: var(--sc-muted); font-size: var(--fs-xs); margin-top: 8px; line-height: 1.6; }

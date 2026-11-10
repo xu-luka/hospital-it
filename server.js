@@ -125,6 +125,12 @@ function mountInspection(app) {
     app.use('/api/inspection', require('./src/routes/inspection'));
     app.use('/api/inspection', require('./src/routes/inspection-devices'));
     app.use('/api/inspection', require('./src/routes/inspection-extra'));
+    // P2 趋势接口就在 inspection-extra 里；P3 告警单独一个 router，装载失败只让告警下线
+    try {
+      app.use('/api/inspection', require('./src/routes/inspection-alerts'));
+    } catch (e) {
+      console.error('>>> [告警] 路由装载失败，巡检不受影响：' + ((e && e.message) || e));
+    }
     // 网络流量监控（端口级，复用 SSH，不引入 SNMP）
     // 单独包一层：这是新增模块，万一它装载失败（依赖缺失、文件版本不匹配），
     // 不能连累巡检本身 —— 巡检挂了才是事故，流量监控挂了只是少一块功能。
@@ -138,6 +144,18 @@ function mountInspection(app) {
     scheduler.setOnRoundDone(async (ctx) => {
       try { deviceRepo.updateLastStatus(ctx.results || []); }
       catch (e) { console.error('>>> 回写设备状态失败：' + ((e && e.message) || e)); }
+      // P3 告警评估挂在轮次后置钩子里，scheduler 核心一行不改。
+      // 它自己整段兜异常，这里再包一层，确保任何情况下都不影响「上一轮已完成」这个事实。
+      try {
+        const alerts = require('./src/inspection/alerts');
+        const ar = alerts.applyRound(ctx.results || []);
+        if (ar && ar.ok && (ar.opened || ar.resolved)) {
+          console.log('>>> [告警] 第 ' + ctx.roundNo + ' 轮：新增 ' + ar.opened
+            + ' · 恢复 ' + ar.resolved + ' · 更新 ' + ar.updated);
+        }
+      } catch (e) {
+        console.error('>>> [告警] 轮次评估异常（忽略）：' + ((e && e.message) || e));
+      }
     });
 
     // 全新部署自愈 + 资产审计。
