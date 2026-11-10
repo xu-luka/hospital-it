@@ -142,24 +142,28 @@ function buildText(round) {
   const r2 = round === 2;
   const L = [];
   const bootTs = Math.floor(Date.now() / 1000) - 3600;
-  L.push('# HELP windows_cpu_time_total CPU time');
-  L.push('windows_cpu_time_total{mode="idle"} ' + (r2 ? 106 : 100));
-  L.push('windows_cpu_time_total{mode="user"} ' + (r2 ? 54 : 50));
-  L.push('windows_cpu_time_total{mode="privileged"} ' + (r2 ? 12 : 10));
-  L.push('windows_cpu_cores 8');
-  L.push('windows_cs_hostname{hostname="TEST-HIS-01"} 1');
+  // 0.32.1 真实指标名：每个 core 每个 mode 一条；开机时刻去掉 _seconds。
+  // 主路径必须用真名，否则自测全绿、真实机器 CPU 恒为 null。
+  L.push('# HELP windows_cpu_time_seconds_total CPU time');
+  for (const core of ['0', '1']) {
+    L.push('windows_cpu_time_seconds_total{core="' + core + '",mode="idle"} ' + (r2 ? 53 : 50));
+    L.push('windows_cpu_time_seconds_total{core="' + core + '",mode="user"} ' + (r2 ? 27 : 25));
+    L.push('windows_cpu_time_seconds_total{core="' + core + '",mode="privileged"} ' + (r2 ? 6 : 5));
+  }
+  L.push('windows_cpu_logical_processor 8');
+  L.push('windows_os_hostname{hostname="TEST-HIS-01"} 1');
   L.push('windows_os_info{product="Windows Server 2019",version="10.0.17763"} 1');
-  L.push('windows_system_boot_time_timestamp_seconds ' + bootTs);
+  L.push('windows_system_boot_time_timestamp ' + bootTs);
   L.push('windows_system_processes 120');
   L.push('windows_system_threads 2100');
   L.push('windows_system_handle_count 45000');
   L.push('windows_system_processor_queue_length 2');
   L.push('windows_system_context_switches_total ' + (r2 ? 50500 : 50000));
-  L.push('windows_cs_physical_memory_bytes 8589934592');
+  L.push('windows_memory_physical_total_bytes 8589934592');
   L.push('windows_memory_available_bytes 2147483648');
   L.push('windows_memory_cache_bytes 1073741824');
   L.push('windows_memory_committed_bytes 4294967296');
-  L.push('windows_memory_commit_limit 8589934592');
+  L.push('windows_memory_commit_limit_bytes 8589934592');
   L.push('windows_memory_page_faults_total ' + (r2 ? 1100 : 1000));
   L.push('windows_logical_disk_size_bytes{volume="C:"} 107374182400');
   L.push('windows_logical_disk_free_bytes{volume="C:"} 42949672960');
@@ -175,9 +179,9 @@ function buildText(round) {
   L.push('windows_net_packets_outbound_discarded_total{nic="eth0"} ' + (r2 ? 1 : 0));
   L.push('windows_net_packets_received_errors_total{nic="eth0"} ' + (r2 ? 5 : 2));
   L.push('windows_net_packets_outbound_errors_total{nic="eth0"} ' + (r2 ? 2 : 0));
-  L.push('windows_net_current_bandwidth{nic="eth0"} 1000000000');
+  L.push('windows_net_current_bandwidth_bytes{nic="eth0"} 125000000'); // = 1 Gbps
   L.push('windows_net_bytes_received_total{nic="Loopback Pseudo-Interface 1"} ' + (r2 ? 9999 : 1));
-  L.push('windows_service_state{name="Spooler",state="running"} 1');
+  L.push('windows_service_state{service="Spooler",state="running"} 1');
   L.push('# HELP his_settlement_latency_ms 医保结算平均耗时|ms');
   L.push('his_settlement_latency_ms{item="2207"} 342.5');
   L.push('his_settlement_latency_ms{item="2201"} 120');

@@ -63,30 +63,47 @@ function buildText(round, opts) {
   const bootTs = Math.floor(Date.now() / 1000) - 3600;
 
   if (!o.empty) {
-    lines.push('# HELP windows_cpu_time_total Time processor has spent in different modes');
-    lines.push('# TYPE windows_cpu_time_total counter');
+    // 主路径按 windows_exporter 0.32.1 的真实指标名造数据；o.oldNames 走 0.29/0.30 兼容分支。
+    // 之前 fixture 和代码一起用旧名，自测全绿但真实机器 CPU 恒为 null —— 别再自己骗自己。
+    const cpuName = o.oldNames ? 'windows_cpu_time_total' : 'windows_cpu_time_seconds_total';
+    lines.push('# HELP ' + cpuName + ' Time processor has spent in different modes');
+    lines.push('# TYPE ' + cpuName + ' counter');
     // r1 total = 163，r2 total = 175，idle 差 6 / 总差 12 → 50%
     const idle = r2 ? 106 : 100;
     const user = r2 ? 54 : 50;
     const priv = r2 ? 12 : 10;
-    lines.push('windows_cpu_time_total{mode="idle"} ' + idle);
-    lines.push('windows_cpu_time_total{mode="user"} ' + user);
-    lines.push('windows_cpu_time_total{mode="privileged"} ' + priv);
-    lines.push('windows_cpu_time_total{mode="interrupt"} 2');
-    lines.push('windows_cpu_time_total{mode="dpc"} 1');
-    lines.push('windows_cpu_cores 8');
+    if (o.oldNames) {
+      lines.push(cpuName + '{mode="idle"} ' + idle);
+      lines.push(cpuName + '{mode="user"} ' + user);
+      lines.push(cpuName + '{mode="privileged"} ' + priv);
+      lines.push(cpuName + '{mode="interrupt"} 2');
+      lines.push(cpuName + '{mode="dpc"} 1');
+      lines.push('windows_cpu_cores 8');
+    } else {
+      // 0.32 每个 core 每个 mode 各一条，验证按 mode 求和（两个核各占一半）
+      const half = (v) => String(v / 2);
+      for (const core of ['0', '1']) {
+        lines.push(cpuName + '{core="' + core + '",mode="idle"} ' + half(idle));
+        lines.push(cpuName + '{core="' + core + '",mode="user"} ' + half(user));
+        lines.push(cpuName + '{core="' + core + '",mode="privileged"} ' + half(priv));
+        lines.push(cpuName + '{core="' + core + '",mode="interrupt"} 1');
+        lines.push(cpuName + '{core="' + core + '",mode="dpc"} 0.5');
+      }
+      lines.push('windows_cpu_logical_processor 8');
+    }
     lines.push('windows_system_processes 120');
 
     if (o.oldNames) {
       lines.push('windows_system_system_up_time ' + bootTs);
       lines.push('windows_os_hostname{hostname="TEST-HIS-01"} 1');
+      lines.push('windows_cs_physical_memory_bytes 8589934592');
     } else {
-      lines.push('windows_system_boot_time_timestamp_seconds ' + bootTs);
-      lines.push('windows_cs_hostname{hostname="TEST-HIS-01"} 1');
+      lines.push('windows_system_boot_time_timestamp ' + bootTs);
+      lines.push('windows_os_hostname{hostname="TEST-HIS-01"} 1');
       lines.push('windows_os_info{product="Microsoft Windows Server 2016 Standard",version="10.0.14393"} 1');
+      lines.push('windows_memory_physical_total_bytes 8589934592');
+      lines.push('windows_memory_commit_limit_bytes 17179869184');
     }
-
-    lines.push('windows_cs_physical_memory_bytes 8589934592');
     if (o.noMemoryCollector) {
       lines.push('windows_os_free_physical_memory_bytes 2147483648');
     } else {
@@ -108,14 +125,20 @@ function buildText(round, opts) {
     lines.push('windows_net_bytes_received_total{nic="eth0"} ' + rx);
     lines.push('windows_net_bytes_sent_total{nic="eth0"} ' + tx);
     lines.push('windows_net_packets_received_discarded_total{nic="eth0"} ' + (r2 ? 3 : 1));
+    // 0.32 的带宽指标改名且单位从 bit/s 变 byte/s：125000000 B/s = 1 Gbps
+    lines.push(o.oldNames
+      ? 'windows_net_current_bandwidth{nic="eth0"} 1000000000'
+      : 'windows_net_current_bandwidth_bytes{nic="eth0"} 125000000');
     // 环回接口流量再大也必须被过滤掉
     lines.push('windows_net_bytes_received_total{nic="Loopback Pseudo-Interface 1"} ' + (r2 ? 999999999 : 1));
 
     if (!o.noServiceCollector) {
-      lines.push('windows_service_state{name="Spooler",state="running"} 1');
-      lines.push('windows_service_state{name="Spooler",state="stopped"} 0');
-      lines.push('windows_service_state{name="MSSQLSERVER",state="stopped"} 1');
-      lines.push('windows_service_state{name="MSSQLSERVER",state="running"} 0');
+      // 0.32 服务名标签是 service，0.31 及更早是 name
+      const tag = o.oldNames ? 'name' : 'service';
+      lines.push('windows_service_state{' + tag + '="Spooler",state="running"} 1');
+      lines.push('windows_service_state{' + tag + '="Spooler",state="stopped"} 0');
+      lines.push('windows_service_state{' + tag + '="MSSQLSERVER",state="stopped"} 1');
+      lines.push('windows_service_state{' + tag + '="MSSQLSERVER",state="running"} 0');
     }
   }
   return lines.join('\n') + '\n';
@@ -216,6 +239,15 @@ async function testNormal() {
   ok('开机时长约 3600 秒', Math.abs(r.metrics.uptime_sec - 3600) <= 5, '实际 ' + r.metrics.uptime_sec);
 
   eq('CPU 使用率 50%', r.metrics.cpu_percent, 50);
+
+  // 0.32.1 指标名兼容：这一组以前全靠 fixture 用旧名才「绿」，真实机器上全为 null
+  eq('0.32 cpu_time_seconds_total 能算出 CPU', r.metrics.cpu_percent, 50);
+  eq('0.32 cpu_logical_processor 出核数', r.metrics.cores, 8);
+  eq('0.32 boot_time_timestamp 出开机时长', Math.abs(r.metrics.uptime_sec - 3600) <= 5, true);
+  eq('0.32 service 标签能识别服务', r.services[0].running, true);
+  eq('0.32 commit_limit_bytes 出提交上限', r.extra.memory.commit_limit_mb, 16384);
+  eq('0.32 带宽 byte/s 换算成 bps', r.extra.net[0].bandwidth_bps, 1000000000);
+  near('0.32 带宽利用率不再差 8 倍', r.metrics.net[0].util_pct, 0.12, 0.05);
 
   eq('内存总量 MB', r.metrics.mem_total_mb, 8192);
   eq('内存已用 MB', r.metrics.mem_used_mb, 6144);
@@ -342,6 +374,9 @@ async function testOldNames() {
   eq('旧版 ok', r.ok, true);
   ok('旧版开机时间可换算', Math.abs(r.metrics.uptime_sec - 3600) <= 5, '实际 ' + r.metrics.uptime_sec);
   eq('旧版主机名走 windows_os_hostname', r.metrics.hostname, 'TEST-HIS-01');
+  eq('旧版 cpu_time_total 仍能算出 CPU', r.metrics.cpu_percent, 50);
+  eq('旧版 cpu_cores 仍能取到核数', r.metrics.cores, 8);
+  eq('旧版内存总量仍可换算', r.metrics.mem_total_mb, 8192);
   contains('提示升级版本', r.note, '旧版 windows_exporter');
 }
 

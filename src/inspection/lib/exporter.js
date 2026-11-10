@@ -14,9 +14,13 @@
  * 三个必须在实现里处理的现实问题（踩了才不返工）：
  *   A. CPU 与网络速率都是 counter（开机至今的累计值），单次抓取算不出使用率，
  *      必须隔 1 秒抓两次做差分 —— 这是 Prometheus rate() 的最小实现。
- *   B. 指标名在 0.30 做过一轮 breaking change（system_up_time →
- *      boot_time_timestamp_seconds、page_file 从 os 拆出去等）。这里每处取值
- *      都写成「新名优先、旧名兜底」，免得以后有人装了 0.29 整条通道失灵。
+ *   B. 指标名改过两轮：0.30（system_up_time → boot_time_timestamp_seconds、
+ *      page_file 从 os 拆出去、cs 收集器还在），0.32（cpu_time_total →
+ *      cpu_time_seconds_total、boot_time_timestamp 去掉 _seconds、commit_limit
+ *      加 _bytes、current_bandwidth 改名且 bit/s 变 byte/s、服务标签 name → service、
+ *      cs 收集器整个移除、os 只留 3 个指标）。每处取值一律「0.32 新名优先、
+ *      0.30 / 0.29 旧名兜底」，否则装 0.32 的机器 CPU / uptime / 核数 / 服务
+ *      会静默变 null，界面上看着就像「这条通道采不到东西」。
  *   C. 收集器是可选启用的。service / logical_disk 没开时，对应指标根本不存在，
  *      此时**绝不能把「查不到」当成「服务没跑」** —— 那会把一台正常的机器
  *      判成 critical。查不到就整体跳过该项，并在 note 里说明原因。
@@ -52,8 +56,8 @@ const METRIC_CATALOG = Object.freeze([
   { key: 'processor_queue_length', group: 'system', unit: '个', names: ['windows_system_processor_queue_length'], desc: '处理器队列长度' },
   { key: 'memory_cache_bytes', group: 'memory', unit: 'B', names: ['windows_memory_cache_bytes', 'windows_os_cache_bytes'], desc: '内存缓存' },
   { key: 'memory_committed_bytes', group: 'memory', unit: 'B', names: ['windows_memory_committed_bytes', 'windows_os_committed_bytes'], desc: '已提交内存' },
-  { key: 'memory_commit_limit_bytes', group: 'memory', unit: 'B', names: ['windows_memory_commit_limit', 'windows_os_commit_limit'], desc: '提交上限' },
-  { key: 'net_current_bandwidth', group: 'net', unit: 'bps', byLabel: 'nic', names: ['windows_net_current_bandwidth'], desc: '网卡标称带宽' }
+  { key: 'memory_commit_limit_bytes', group: 'memory', unit: 'B', names: ['windows_memory_commit_limit_bytes', 'windows_memory_commit_limit', 'windows_os_commit_limit'], desc: '提交上限' },
+  { key: 'net_current_bandwidth', group: 'net', unit: 'bps', byLabel: 'nic', names: ['windows_net_current_bandwidth_bytes', 'windows_net_current_bandwidth'], desc: '网卡标称带宽' }
 ]);
 
 /** counter 类扩展指标：必须两次采样做差分才有意义（每秒速率） */
@@ -289,20 +293,34 @@ function textfileMetrics(map, helps, prefix) {
  * 某个 mode 的计数器变小说明目标机重启过，整组差分作废（返回 null 而不是算个假值）。
  */
 function cpuBusyPercent(a, b) {
-  const arrA = a.get('windows_cpu_time_total');
-  const arrB = b.get('windows_cpu_time_total');
+  // 0.32 起叫 windows_cpu_time_seconds_total（秒），0.31 及更早是 windows_cpu_time_total。
+  // 早期实现只认旧名，装 0.32 的机器 CPU 恒为 null，大屏卡片整行消失。
+  const name = firstHit(b, ['windows_cpu_time_seconds_total', 'windows_cpu_time_total']);
+  if (!name || !a.has(name)) return null;
+  const arrA = a.get(name);
+  const arrB = b.get(name);
   if (!arrA || !arrB) return null;
 
-  const prev = {};
-  for (const m of arrA) prev[m.labels.mode || ''] = m.value;
+  // 0.32 每个 core 每个 mode 各一条，必须按 mode 求和；旧版只有全局一条，求和也成立。
+  const sumByMode = (arr) => {
+    const out = {};
+    for (const m of arr) {
+      const mode = String(m.labels.mode || '');
+      const v = Number(m.value);
+      if (!isFinite(v)) continue;
+      out[mode] = (out[mode] || 0) + v;
+    }
+    return out;
+  };
+  const prev = sumByMode(arrA);
+  const now = sumByMode(arrB);
 
   let total = 0;
   let idle = 0;
   let usable = 0;
-  for (const m of arrB) {
-    const mode = m.labels.mode || '';
+  for (const mode of Object.keys(now)) {
     if (!(mode in prev)) continue;
-    const d = m.value - prev[mode];
+    const d = now[mode] - prev[mode];
     if (!isFinite(d) || d < 0) return null;
     total += d;
     if (mode === 'idle') idle = d;
@@ -338,7 +356,11 @@ function netRates(a, b, gapMs) {
   const bRxErr = index(b, 'windows_net_packets_received_errors_total');
   const aTxErr = index(a, 'windows_net_packets_outbound_errors_total');
   const bTxErr = index(b, 'windows_net_packets_outbound_errors_total');
-  const bw = index(b, 'windows_net_current_bandwidth');
+  // 0.32 改名且换了单位：windows_net_current_bandwidth 是 bit/s，
+  // windows_net_current_bandwidth_bytes 是 byte/s，利用率换算差 8 倍，必须分开认。
+  const bwName = firstHit(b, ['windows_net_current_bandwidth_bytes', 'windows_net_current_bandwidth']);
+  const bwBytes = bwName === 'windows_net_current_bandwidth_bytes';
+  const bw = bwName ? index(b, bwName) : {};
 
   // counter 差分：计数器回退（重启 / 网卡重建）时该项记 0，不编造数值
   const diff = (x, y, nic) => (x[nic] !== undefined && y[nic] !== undefined && y[nic] - x[nic] >= 0)
@@ -375,7 +397,8 @@ function netRates(a, b, gapMs) {
       tx_drops: diff(aTxDrop, bTxDrop, nic),
       bandwidth_bps: bandwidth,
       // 标称带宽按双向合计算利用率；没有该指标时为 null（不写 0）
-      util_pct: bandwidth ? round1((rxKbps + txKbps) * 1024 * 8 * 100 / bandwidth) : null
+      util_pct: bandwidth
+        ? round1((rxKbps + txKbps) * 1024 * (bwBytes ? 1 : 8) * 100 / bandwidth) : null
     });
   }
   out.sort((x, y) => (y.rx_kbps + y.tx_kbps) - (x.rx_kbps + x.tx_kbps));
@@ -473,10 +496,12 @@ function buildExtra(m1, m2, gapMs, hasSecond, textItems, base, io) {
   const committed = scalars.memory.memory_committed_bytes;
   const limit = scalars.memory.memory_commit_limit_bytes;
   const bandwidth = {};
-  const bwName = firstHit(m2, ['windows_net_current_bandwidth']);
+  const bwName = firstHit(m2, ['windows_net_current_bandwidth_bytes', 'windows_net_current_bandwidth']);
+  // 字段名 bandwidth_bps 是 bit/s；0.32 给的是 byte/s，统一换算，别让下游算错 8 倍
+  const bwScale = bwName === 'windows_net_current_bandwidth_bytes' ? 8 : 1;
   for (const m of (bwName ? (m2.get(bwName) || []) : [])) {
     const k = m.labels.nic || '';
-    if (k) bandwidth[k] = m.value;
+    if (k) bandwidth[k] = m.value * bwScale;
   }
 
   const disks = (base.disks || []).map((d) => Object.assign({}, d, io[d.mount] || {}));
@@ -538,13 +563,17 @@ function disksOf(map) {
   return out;
 }
 
-/** 服务当前状态：windows_service_state{name,state} 只有当前状态那条的值为 1 */
+/**
+ * 服务当前状态：windows_service_state 只有当前状态那条的值为 1。
+ * 0.32 起服务名标签叫 service，0.31 及更早叫 name —— 两个都认，否则 0.32 上
+ * states 恒为空，配了服务检查的机器会被整批误判成「服务没在跑」。
+ */
 function serviceStates(map) {
   const out = {};
   const arr = map.get('windows_service_state') || [];
   for (const m of arr) {
     if (Number(m.value) !== 1) continue;
-    const n = String(m.labels.name || '').toLowerCase();
+    const n = String(m.labels.service || m.labels.name || '').toLowerCase();
     if (n) out[n] = String(m.labels.state || '').toLowerCase();
   }
   return out;
@@ -609,22 +638,32 @@ async function collectExporter(server, timeoutMs) {
   const osName = osInfo.product || osInfo.caption || '';
   const kernel = osInfo.version || '';
 
-  const bootTs = pickAny(m2, ['windows_system_boot_time_timestamp_seconds', 'windows_system_system_up_time']);
+  // 开机时刻改名过两次：0.32 是 boot_time_timestamp，0.30/0.31 带 _seconds，
+  // 0.29 及更早是 system_up_time。三个都认，否则 uptime 恒为 null。
+  const bootTs = pickAny(m2, [
+    'windows_system_boot_time_timestamp',
+    'windows_system_boot_time_timestamp_seconds',
+    'windows_system_system_up_time'
+  ]);
   const uptimeSec = (bootTs && isFinite(bootTs))
     ? Math.max(0, Math.round(Date.now() / 1000 - bootTs)) : null;
 
-  const cores = pickAny(m2, ['windows_cpu_cores', 'windows_cs_logical_processors']);
+  // 0.32 没有 cs 收集器了，核数由 cpu 收集器的 windows_cpu_logical_processor 给出
+  const cores = pickAny(m2, [
+    'windows_cpu_logical_processor', 'windows_cpu_cores', 'windows_cs_logical_processors'
+  ]);
 
-  // 0.32 的 memory 收集器给 available；没装 memory 收集器时退回 os 收集器的空闲物理内存
+  // 0.32 的 memory 收集器给 available / physical_total；cs / os 那批是旧名兜底
   const memTotalBytes = pickAny(m2, [
-    'windows_cs_physical_memory_bytes',
     'windows_memory_physical_total_bytes',
+    'windows_cs_physical_memory_bytes',
+    'windows_memory_commit_limit_bytes',
     'windows_memory_commit_limit'
   ]);
   const memAvailBytes = pickAny(m2, [
     'windows_memory_available_bytes',
-    'windows_os_free_physical_memory_bytes',
-    'windows_memory_physical_free_bytes'
+    'windows_memory_physical_free_bytes',
+    'windows_os_free_physical_memory_bytes'
   ]);
   const memTotalMb = (memTotalBytes && memTotalBytes > 0) ? Math.round(memTotalBytes / 1048576) : null;
   const memUsedMb = (memTotalMb && memAvailBytes !== null)
@@ -634,8 +673,9 @@ async function collectExporter(server, timeoutMs) {
 
   // 旧版指标名命中说明装的是 0.29 或更早 —— 不报错，但提示一句
   if (pick(m2, 'windows_system_system_up_time') !== null &&
-      pick(m2, 'windows_system_boot_time_timestamp_seconds') === null) {
-    notes.push('检测到旧版 windows_exporter 指标名，建议升级到 0.30 及以上（新版指标名有变化）');
+      pick(m2, 'windows_system_boot_time_timestamp_seconds') === null &&
+      pick(m2, 'windows_system_boot_time_timestamp') === null) {
+    notes.push('检测到旧版 windows_exporter 指标名（0.29 及更早），建议升级到 0.32（指标名已改过两轮）');
   }
 
   /* 服务检查：只支持按「服务名」检查，进程/端口两类本通道做不到 ——

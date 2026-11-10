@@ -347,6 +347,12 @@
               </div>
             </div>
 
+            <!-- exporter 通道采到的扩展指标不进 CPU/内存两条进度条，老卡片上就等于「什么都没有」。
+                 这里给 exporter 设备补一行摘要，SSH/WMI 卡片版式保持原样。 -->
+            <div v-if="d.extraHint && d.extraHint.length" class="scr-c-more">
+              <span v-for="(t, ti) in d.extraHint" :key="ti">{{ t }}</span>
+            </div>
+
             <!-- 版式 D：交换机卡片内联端口条。看设备与看流量在同一张卡片里，
                  不用在「这台机器怎么了」和「哪个口在跑」之间来回切视线。 -->
             <div v-if="nfPorts && nf.ready && d.os === 'switch' && portsOf(d).length" class="nf-ports">

@@ -2813,6 +2813,12 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-base); }
 .scr-bar-row .fill.warn { background: var(--sc-warn); }
 .scr-bar-row .fill.bad { background: var(--sc-bad); }
 .scr-bar-row .v { width: 44px; text-align: right; font-variant-numeric: tabular-nums; color: var(--sc-text); font-family: var(--font-mono); }
+.scr-c-more {
+  display: flex; flex-wrap: wrap; gap: 4px 10px;
+  margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--sc-line);
+  color: var(--sc-muted); font-size: var(--fs-xs);
+}
+.scr-c-more span { white-space: nowrap; font-variant-numeric: tabular-nums; }
 
 .scr-reasons { margin-top: 10px; display: grid; gap: 5px; }
 .scr-reason {

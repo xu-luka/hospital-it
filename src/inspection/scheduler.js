@@ -86,6 +86,46 @@ function summarize(results) {
   return s;
 }
 
+/**
+ * exporter 设备卡片的一行扩展摘要。
+ * 老卡片模板只画 CPU / 内存两条进度条 + 告警，P1 采到的线程、句柄、磁盘 IO、
+ * 服务状态、textfile 业务指标全都在 extra 里，运维从大屏上看就是「这台机器只有内存」。
+ * 这里把已采到的项压成几个短标签，只给 exporter 通道生成 —— SSH 卡片版式保持原样。
+ */
+function extraHintOf(r) {
+  const ex = r.extra || {};
+  const m = r.metrics || {};
+  const out = [];
+  let n = 0;
+  const walk = (o) => {
+    if (!o || typeof o !== 'object' || Array.isArray(o)) return;
+    for (const v of Object.values(o)) {
+      if (typeof v === 'number' && isFinite(v)) n++;
+      else if (v && typeof v === 'object' && !Array.isArray(v)) walk(v);
+    }
+  };
+  walk(ex);
+  const tfCount = Array.isArray(ex.textfile) ? ex.textfile.length : 0;
+  n += tfCount;  // 数组不进 walk，textfile 业务指标也要算进「扩展项」
+  // 按值班时最想看的顺序排，最多 6 个标签，别把卡片撑成两行
+  if (n) out.push('扩展 ' + n + ' 项');
+  if (m.cores) out.push(m.cores + ' 核');
+  if (m.uptime_sec) {
+    out.push(m.uptime_sec >= 86400
+      ? '开机 ' + (m.uptime_sec / 86400).toFixed(1) + ' 天'
+      : '开机 ' + Math.round(m.uptime_sec / 3600) + ' 时');
+  }
+  if (tfCount) out.push('业务指标 ' + tfCount);
+  if (Array.isArray(r.services) && r.services.length) {
+    out.push('服务 ' + r.services.filter((s) => s.running).length + '/' + r.services.length);
+  }
+  if (Array.isArray(m.disks) && m.disks.length) out.push('磁盘 ' + m.disks.length);
+  if (Array.isArray(m.diskio) && m.diskio.length) out.push('磁盘IO ' + m.diskio.length);
+  if (m.procs) out.push('进程 ' + m.procs);
+  if (Array.isArray(m.net) && m.net.length) out.push('网卡 ' + m.net.length);
+  return out.length ? out.slice(0, 6) : null;
+}
+
 function buildStatus() {
   return {
     updatedAt: state.lastUpdate,
@@ -107,7 +147,8 @@ function buildStatus() {
       note: (r.ok && r.note) ? r.note : '',
       cpu: r.metrics ? r.metrics.cpu_percent : null,
       mem: r.metrics ? r.metrics.mem_percent : null,
-      hostname: r.metrics ? r.metrics.hostname : (r.hw ? r.hw.model : null)
+      hostname: r.metrics ? r.metrics.hostname : (r.hw ? r.hw.model : null),
+      extraHint: r.channel === 'exporter' ? extraHintOf(r) : null
     })),
     // 阶段 5 新增字段，旧消费者忽略即可（向后兼容）
     workerHealthy: state.workerHealthy,
