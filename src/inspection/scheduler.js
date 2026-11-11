@@ -189,24 +189,27 @@ function extraDetailOf(r) {
     ['采样间隔', valUnit(ex.gap_ms, ' ms')]
   ]);
 
-  kv('系统扩展（windows_exporter）', [
-    ['系统线程数', valUnit(s.threads, ' 个')],
-    ['系统句柄数', valUnit(s.handles, ' 个')],
-    ['处理器队列长度', valUnit(s.processor_queue_length, ' 个')],
-    ['上下文切换 / 秒', valUnit(s.context_switches_per_sec, ' 次')],
-    ['系统进程数', valUnit(s.processes, ' 个') || valUnit(m.procs, ' 个')]
-  ]);
+  // 这两组是 windows_exporter 专属字段，Linux 上套过来只会出现「标题写着 windows」的荒唐行
+  if (ex.platform !== 'linux') {
+    kv('系统扩展（windows_exporter）', [
+      ['系统线程数', valUnit(s.threads, ' 个')],
+      ['系统句柄数', valUnit(s.handles, ' 个')],
+      ['处理器队列长度', valUnit(s.processor_queue_length, ' 个')],
+      ['上下文切换 / 秒', valUnit(s.context_switches_per_sec, ' 次')],
+      ['系统进程数', valUnit(s.processes, ' 个') || valUnit(m.procs, ' 个')]
+    ]);
 
-  kv('内存扩展', [
-    ['物理内存总量', mbVal(mm.total_mb)],
-    ['已用内存', mbVal(mm.used_mb)],
-    ['可用内存', mbVal(mm.available_mb)],
-    ['缓存', mbVal(mm.cache_mb)],
-    ['已提交内存', mbVal(mm.committed_mb)],
-    ['提交上限', mbVal(mm.commit_limit_mb)],
-    ['提交使用率', valUnit(mm.commit_percent, '%')],
-    ['缺页 / 秒', valUnit(mm.page_faults_per_sec, ' 次')]
-  ]);
+    kv('内存扩展', [
+      ['物理内存总量', mbVal(mm.total_mb)],
+      ['已用内存', mbVal(mm.used_mb)],
+      ['可用内存', mbVal(mm.available_mb)],
+      ['缓存', mbVal(mm.cache_mb)],
+      ['已提交内存', mbVal(mm.committed_mb)],
+      ['提交上限', mbVal(mm.commit_limit_mb)],
+      ['提交使用率', valUnit(mm.commit_percent, '%')],
+      ['缺页 / 秒', valUnit(mm.page_faults_per_sec, ' 次')]
+    ]);
+  }
 
   // 磁盘：容量来自 metrics.disks，IOPS / 延迟来自 extra.disks，KB/s 来自 metrics.diskio
   const baseDisks = Array.isArray(m.disks) ? m.disks : [];
@@ -267,6 +270,49 @@ function extraDetailOf(r) {
     ];
   }));
 
+  // Linux（SSH 通道）：字段结构与 exporter 不同，单独成组，别硬套 windows_* 的模板
+  if (ex.platform === 'linux') {
+    const lp = ex.cpu || {};
+    const lf = ex.fs || {};
+    const ln = ex.net || {};
+    const lh = ex.health || {};
+    kv('CPU 扩展（Linux）', [
+      ['iowait（等磁盘）', valUnit(lp.iowait_pct, '%')],
+      ['steal（被宿主抢占）', valUnit(lp.steal_pct, '%')],
+      ['上下文切换 / 秒', valUnit(lp.ctxt_ps, ' 次')],
+      ['运行队列', valUnit(lp.procs_running, ' 个')],
+      ['阻塞队列', valUnit(lp.procs_blocked, ' 个')]
+    ]);
+    kv('文件系统（句柄 / inode）', [
+      ['句柄已用', valUnit(lf.fd_used, ' 个')],
+      ['句柄上限', lf.fd_max ? String(lf.fd_max) : null],
+      ['inode 最高使用率', valUnit(lf.inode_max_pct, '%')],
+      ['inode 峰值挂载点', lf.inode_max_mount || null]
+    ]);
+    kv('网络扩展', [
+      ['TCP 已建立', valUnit(ln.tcp_estab, ' 个')],
+      ['TCP TIME_WAIT', valUnit(ln.tcp_timewait, ' 个')],
+      ['TCP 监听', valUnit(ln.tcp_listen, ' 个')],
+      ['重传段数（开机至今）', valUnit(ln.retrans_total, ' 段')],
+      ['重传率', valUnit(ln.retrans_pct, '%')]
+    ]);
+    table('网卡链路速率', ['接口', '标称速率'],
+      (Array.isArray(ln.iface) ? ln.iface : []).map((x) => [cell(x.iface), cell(valUnit(x.speed_mbps, ' Mbps'))]));
+    table('磁盘（IOPS / 等待 / 利用率）', ['设备', '读 IOPS', '写 IOPS', '读等待 ms', '写等待 ms', '利用率'],
+      (Array.isArray(ex.disks) ? ex.disks : []).map((d) => [
+        cell(d.dev), cell(d.read_iops), cell(d.write_iops),
+        cell(d.read_await_ms), cell(d.write_await_ms), cell(valUnit(d.util_pct, '%'))
+      ]));
+    kv('系统健康', [
+      ['系统进程数', valUnit(m.procs, ' 个')],
+      ['失败的服务单元', valUnit(lh.failed_units, ' 个')],
+      ['时间同步偏差', valUnit(lh.time_offset_ms, ' ms')],
+      ['OOM 次数（开机至今）', valUnit(lh.oom, ' 次')],
+      ['软 RAID 阵列', valUnit(lh.md_arrays, ' 个')],
+      ['RAID 降级', valUnit(lh.md_degraded, ' 个')]
+    ]);
+  }
+
   return {
     groups: groups,
     meta: {
@@ -301,10 +347,11 @@ function buildStatus() {
       cpu: r.metrics ? r.metrics.cpu_percent : null,
       mem: r.metrics ? r.metrics.mem_percent : null,
       hostname: r.metrics ? r.metrics.hostname : (r.hw ? r.hw.model : null),
-      extraHint: r.channel === 'exporter' ? extraHintOf(r) : null,
+      // 扩展摘要：不再只给 exporter —— Linux（SSH）同样有 extra（iowait、句柄、inode、TCP…）。
+      // 没有 extra 的通道（WMI/数据库/交换机）照旧返回 null，响应体一个字节都不多。
+      extraHint: r.extra ? extraHintOf(r) : null,
       // 点摘要行要立刻看到明细：随 status 一起下发，不另开接口、不额外等一次请求。
-      // 只给 exporter 生成，SSH/WMI 的响应体一个字节都不多。
-      extraDetail: r.channel === 'exporter' ? extraDetailOf(r) : null
+      extraDetail: r.extra ? extraDetailOf(r) : null
     })),
     // 阶段 5 新增字段，旧消费者忽略即可（向后兼容）
     workerHealthy: state.workerHealthy,
