@@ -422,12 +422,13 @@ function serverCard(r, thresholds, idx) {
         { k: '提交使用率', v: mm.commit_percent === null || mm.commit_percent === undefined ? null : mm.commit_percent + '%' },
         { k: '缺页/秒', v: mm.page_faults_per_sec }
       ]);
-      const exDisks = (ex.disks || []).filter((d) => d.read_iops !== undefined || d.write_iops !== undefined);
+      // 数组守卫：Linux 通道的 ex.net/ex.disks 结构不同（ex.net 是对象），不能用 || [] 兜底
+      const exDisks = (Array.isArray(ex.disks) ? ex.disks : []).filter((d) => d.read_iops !== undefined || d.write_iops !== undefined);
       const exDiskTable = exDisks.length ? `
         <div class="sec-title" style="margin-top:10px">磁盘 IOPS 与平均延迟</div>
         <table><thead><tr><th>卷</th><th>读 IOPS</th><th>写 IOPS</th><th>读延迟(ms)</th><th>写延迟(ms)</th><th>使用率</th></tr></thead>
         <tbody>${exDisks.map((d) => `<tr><td>${escapeHtml(d.mount || '')}</td><td>${d.read_iops}</td><td>${d.write_iops}</td><td>${d.read_latency_ms === null ? '—' : d.read_latency_ms}</td><td>${d.write_latency_ms === null ? '—' : d.write_latency_ms}</td><td>${d.use_percent}%</td></tr>`).join('')}</tbody></table>` : '';
-      const exNets = (ex.net || []).filter((n) => n.rx_errors !== undefined);
+      const exNets = (Array.isArray(ex.net) ? ex.net : []).filter((n) => n.rx_errors !== undefined);
       const exNetTable = exNets.length ? `
         <div class="sec-title" style="margin-top:10px">网络错包与带宽利用率</div>
         <table><thead><tr><th>接口</th><th>收错包</th><th>发错包</th><th>收丢包</th><th>发丢包</th><th>带宽</th><th>利用率</th></tr></thead>
