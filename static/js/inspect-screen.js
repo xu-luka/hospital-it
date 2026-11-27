@@ -37,11 +37,66 @@
     { key: 'x.tcp_established', label: 'TCP 已建立连接', unit: '个' }
   ];
 
+  /* ---------------- 驾驶舱版（P1） ----------------
+     同一视图内的第二套版式：值班版 DOM 一行不动，驾驶舱版只做投屏只读展示。
+     图表全部手绘 SVG（内网没有图表库），数据一律从 load()/loadExt()/
+     loadNetflow()/loadBiz() 已拉回来的响应式对象派生，零新增后端接口。 */
+  const CAB_MODES = [
+    { key: 'duty', label: '值班版' },
+    { key: 'cockpit', label: '驾驶舱版' }
+  ];
+  const CAB_PALETTES = [
+    { key: 'system', label: '系统色' },
+    { key: 'ref', label: '参考色' }
+  ];
+  const CAB_ST_COLOR = {
+    normal: 'var(--cab-ok)', warning: 'var(--cab-warn)',
+    critical: 'var(--cab-bad)', error: 'var(--cab-muted)'
+  };
+
+  /** 环形 / 旭日分段：数值 → stroke-dasharray + stroke-dashoffset。
+      每段减 1.5 留一道缝，否则同色相邻时会糊成一整圈。 */
+  function arcOf(segs, r) {
+    const c = 2 * Math.PI * r;
+    let total = 0;
+    for (const s of segs) total += (Number(s.value) || 0);
+    let acc = 0;
+    const out = segs.map((s) => {
+      const v = Number(s.value) || 0;
+      const len = total ? v / total * c : 0;
+      const row = {
+        label: s.label, value: v, color: s.color,
+        dash: Math.max(0, len - 1.5), offset: -acc,
+        pct: total ? Math.round(v / total * 1000) / 10 : 0
+      };
+      acc += len;
+      return row;
+    });
+    return { c: c, segs: out, total: total };
+  }
+
+  /** 分区聚合：健康度 / 环形 / 旭日共用一份，避免三处各算一遍导致数字对不上 */
+  function cabGroupOf(key, title, list, color) {
+    const counts = { normal: 0, warning: 0, critical: 0, error: 0 };
+    let cpu = 0, cn = 0, mem = 0, mn = 0;
+    for (const d of list) {
+      if (counts[d.status] !== undefined) counts[d.status]++;
+      if (typeof d.cpu === 'number' && isFinite(d.cpu)) { cpu += d.cpu; cn++; }
+      if (typeof d.mem === 'number' && isFinite(d.mem)) { mem += d.mem; mn++; }
+    }
+    return {
+      key: key, title: title, total: list.length, counts: counts, color: color,
+      okPct: list.length ? Math.round(counts.normal / list.length * 100) : 0,
+      cpuAvg: cn ? Math.round(cpu / cn) : null,
+      memAvg: mn ? Math.round(mem / mn) : null
+    };
+  }
+
   function pad(n) { return String(n).padStart(2, '0'); }
 
   V.BigScreenView = {
     template: `
-    <div class="scr-wrap" ref="box">
+    <div class="scr-wrap" :class="{cockpit: screenMode==='cockpit', 'ref-blue': screenMode==='cockpit' && palette==='ref'}" ref="box">
       <div class="scr-top">
         <div>
           <div class="scr-title">机房设备巡检 · 监控大屏</div>
@@ -54,6 +109,19 @@
       </div>
 
       <div class="scr-bar">
+        <!-- 版式开关：默认仍是值班版（保护值班肌肉记忆），选择记在 localStorage。
+             驾驶舱版是投屏只读视图，写操作一律留在值班版。 -->
+        <span class="scr-flow-sw">
+          <span class="k">版式</span>
+          <span v-for="m in cabModes" :key="m.key" class="opt"
+            :class="{active: screenMode===m.key}" @click="setScreenMode(m.key)">{{ m.label }}</span>
+        </span>
+        <span v-if="screenMode==='cockpit'" class="scr-flow-sw">
+          <span class="k">色板</span>
+          <span v-for="p in cabPalettes" :key="p.key" class="opt"
+            :class="{active: palette===p.key}" @click="setPalette(p.key)">{{ p.label }}</span>
+        </span>
+        <template v-if="screenMode==='duty'">
         <span class="scr-live"><i class="scr-dot"></i>实时刷新 · 每 {{ data.interval }} 秒</span>
         <span v-if="data.round" class="scr-chip">第 {{ data.round }} 轮</span>
         <span v-if="data.running" class="scr-chip warn">正在巡检…</span>
@@ -78,24 +146,37 @@
             </span>
           </span>
         </template>
+        </template>
+        <template v-else>
+          <span class="scr-live"><i class="scr-dot"></i>投屏只读 · 每 {{ data.interval }} 秒</span>
+          <span v-if="data.round" class="scr-chip">第 {{ data.round }} 轮</span>
+          <span class="scr-chip">{{ cabAsOf }}</span>
+          <span v-if="data.sourceMode" class="scr-chip">数据源：{{ sourceLabel }}</span>
+        </template>
         <div style="flex:1"></div>
+        <button v-if="screenMode==='cockpit'" class="scr-btn" @click="toggleCabMeta">角标 · {{ showCabMeta ? '开' : '关' }}</button>
         <button class="scr-btn" @click="refreshAll">立即刷新</button>
-        <button v-if="canOperate" class="scr-btn primary" :disabled="busy" @click="runNow">
-          {{ busy ? '巡检中…' : '触发巡检' }}
-        </button>
-        <button v-if="isAdmin" class="scr-btn" :disabled="busy" @click="reload">重载配置</button>
+        <template v-if="screenMode==='duty'">
+          <button v-if="canOperate" class="scr-btn primary" :disabled="busy" @click="runNow">
+            {{ busy ? '巡检中…' : '触发巡检' }}
+          </button>
+          <button v-if="isAdmin" class="scr-btn" :disabled="busy" @click="reload">重载配置</button>
+        </template>
         <button class="scr-btn" @click="toggleFull">{{ full ? '退出投屏' : '全屏投屏' }}</button>
       </div>
 
-      <div v-if="canInspect && alertItems.length" class="scr-alert">
+      <!-- P1：值班版顶层块逐一带版式条件，驾驶舱版是下面独立的 cab-wrap。
+           不用 <template> 整块包：运行时编译器会把内层的 </div> 提前闭合根容器，
+           实测会把 cab-wrap 挤到 .scr-wrap 外面，投屏时整块内容掉到屏幕下方。 -->
+      <div v-if="screenMode==='duty' && canInspect && alertItems.length" class="scr-alert">
         <div v-for="(a,i) in alertItems" :key="i">{{ a }}</div>
       </div>
 
-      <div v-if="!canInspect" class="scr-alert">
+      <div v-if="screenMode==='duty' && !canInspect" class="scr-alert">
         <div>当前角色未被分配「巡检报告 · 查看」权限，大屏不显示巡检数据{{ canNetflow ? '，仅显示流量部分' : '' }}。需要查看请让管理员在【系统管理 → 角色权限】中勾选。</div>
       </div>
 
-      <div v-if="canInspect" class="scr-stats">
+      <div v-if="screenMode==='duty' && canInspect" class="scr-stats">
         <div class="scr-stat t"><div class="num">{{ summary.total }}</div><div class="lbl">设备总数</div></div>
         <div class="scr-stat n"><div class="num">{{ summary.normal }}</div><div class="lbl">正常</div></div>
         <div class="scr-stat w"><div class="num">{{ summary.warning }}</div><div class="lbl">警告</div></div>
@@ -105,7 +186,7 @@
 
       <!-- P2/P3 扩展区块：按定稿插在统计卡正下方，下面的设备分区与流量监控顺序一律不动。
            ext.ready 为 false 时整块隐藏 —— 历史库不可用、接口 404（服务没重启）都不能让大屏白屏。 -->
-      <div v-if="canInspect && ext.ready" class="sx-wrap">
+      <div v-if="screenMode==='duty' && canInspect && ext.ready" class="sx-wrap">
         <div class="sx-head">
           <div>
             <div class="sx-title">扩展监控与告警</div>
@@ -225,7 +306,7 @@
         </div>
       </div>
 
-      <div class="scr-flow" :class="{'with-aside': nf.ready && nfMode==='aside'}">
+      <div v-if="screenMode==='duty'" class="scr-flow" :class="{'with-aside': nf.ready && nfMode==='aside'}">
       <div class="scr-flow-main">
 
       <!-- 版式 A：顶部流量带。放在统计卡正下方、设备分区之前，
@@ -414,14 +495,14 @@
       </aside>
       </div>
 
-      <div class="scr-foot">
+      <div v-if="screenMode==='duty'" class="scr-foot">
         <div><i class="scr-dot"></i>数据每轮巡检后自动更新</div>
         <div>报告目录：{{ data.reportsDir || '-' }}</div>
       </div>
 
       <!-- 扩展采集明细：只读弹窗。点遮罩 / 右上角 ✕ / Esc 都能关，
            每 15 秒轮询回来会同步刷新，不会让人对着上一轮的数据发呆。 -->
-      <div v-if="extraDlg" class="sx-dlg-mask" @click.self="closeExtra">
+      <div v-if="screenMode==='duty' && extraDlg" class="sx-dlg-mask" @click.self="closeExtra">
         <div class="sx-dlg" role="dialog" aria-modal="true" aria-label="扩展采集明细">
           <div class="sx-dlg-h">
             <div class="sx-dlg-ht">
@@ -453,11 +534,237 @@
           </div>
         </div>
       </div>
+
+      <!-- ★ P1 驾驶舱版：投屏只读、16 面板、12 栅格。
+           数据全部来自现有接口，面板右上角标「接口 · 权限码」，可一键隐去；
+           参考图里 4 个重复 TOP10 合成 C2 一个 Tab 榜，3 个空占位换成真指标。 -->
+      <div v-if="screenMode==='cockpit'" class="cab-wrap">
+        <div v-if="!canInspect" class="cab-noperm">
+          <b>当前角色没有「巡检报告 · 查看」权限</b>
+          <span>驾驶舱版不显示巡检数据，也不会发起对应请求。请让管理员在【系统管理 → 角色权限】勾选，或切回值班版查看流量部分。</span>
+        </div>
+
+        <div v-else class="cab-grid">
+          <div v-for="k in cabKpis" :key="k.k" class="cab-kpi" :class="k.cls">
+            <div class="cab-kpi-v">{{ k.v }}</div>
+            <div class="cab-kpi-l">{{ k.label }}</div>
+            <span v-if="showCabMeta" class="cab-meta">{{ k.meta }}</span>
+          </div>
+
+          <div class="cab-panel cab-a1">
+            <div class="cab-h"><b>设备状态分布</b><span v-if="showCabMeta" class="cab-meta">{{ cabMeta.a1 }}</span></div>
+            <div class="cab-b cab-ring-b">
+              <svg class="cab-ring-svg" viewBox="0 0 140 140">
+                <circle cx="70" cy="70" r="52" fill="none" stroke="var(--cab-line)" stroke-width="14"/>
+                <circle v-for="(s,i) in cabStatusRing.segs" :key="i" cx="70" cy="70" r="52"
+                  fill="none" :stroke="s.color" stroke-width="14"
+                  :stroke-dasharray="s.dash + ' ' + (cabStatusRing.c - s.dash)"
+                  :stroke-dashoffset="s.offset" transform="rotate(-90 70 70)"/>
+                <text x="70" y="68" text-anchor="middle" class="cab-ring-n">{{ summary.total }}</text>
+                <text x="70" y="88" text-anchor="middle" class="cab-ring-t">纳管设备</text>
+              </svg>
+              <div class="cab-legend">
+                <div v-for="(s,i) in cabStatusRing.segs" :key="i" class="cab-lg">
+                  <i :style="{background:s.color}"></i><span>{{ s.label }}</span><b>{{ s.value }}</b><em>{{ s.pct }}%</em>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="cab-panel cab-a2">
+            <div class="cab-h"><b>分区设备分布</b><span v-if="showCabMeta" class="cab-meta">{{ cabMeta.a2 }}</span></div>
+            <div class="cab-b cab-ring-b">
+              <svg class="cab-ring-svg" viewBox="0 0 140 140">
+                <circle cx="70" cy="70" r="52" fill="none" stroke="var(--cab-line)" stroke-width="14"/>
+                <circle v-for="(s,i) in cabGroupRing.segs" :key="i" cx="70" cy="70" r="52"
+                  fill="none" :stroke="s.color" stroke-width="14"
+                  :stroke-dasharray="s.dash + ' ' + (cabGroupRing.c - s.dash)"
+                  :stroke-dashoffset="s.offset" transform="rotate(-90 70 70)"/>
+                <text x="70" y="68" text-anchor="middle" class="cab-ring-n">{{ cabGroupRing.total }}</text>
+                <text x="70" y="88" text-anchor="middle" class="cab-ring-t">已归类</text>
+              </svg>
+              <div class="cab-legend sm">
+                <div v-for="(s,i) in cabGroupRing.segs" :key="i" class="cab-lg">
+                  <i :style="{background:s.color}"></i><span>{{ s.label }}</span><b>{{ s.value }}</b>
+                </div>
+                <div v-if="!cabGroupRing.segs.length" class="cab-empty">暂无设备</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="cab-panel cab-a3">
+            <div class="cab-h"><b>分区健康度</b><span v-if="showCabMeta" class="cab-meta">{{ cabMeta.a3 }}</span></div>
+            <div class="cab-b cab-hb">
+              <div v-for="g in cabGroups" :key="g.key" class="cab-hb-row">
+                <span class="nm" :title="g.title">{{ g.title }}</span>
+                <span class="track"><i :style="{width: g.okPct + '%', background: g.color}"></i></span>
+                <span class="pc">{{ g.okPct }}%</span>
+                <span class="ex">C{{ g.cpuAvg === null ? '-' : g.cpuAvg }} M{{ g.memAvg === null ? '-' : g.memAvg }}</span>
+              </div>
+              <div v-if="!cabGroups.length" class="cab-empty">暂无设备分组数据</div>
+            </div>
+          </div>
+
+          <div class="cab-panel cab-b1">
+            <div class="cab-h"><b>分区 × 状态</b><span class="cab-h-sub">主分析图</span>
+              <span v-if="showCabMeta" class="cab-meta">{{ cabMeta.b1 }}</span></div>
+            <div class="cab-b cab-sun-b">
+              <svg class="cab-sun-svg" viewBox="0 0 200 200">
+                <circle cx="100" cy="100" r="44" fill="none" stroke="var(--cab-line)" stroke-width="18"/>
+                <circle v-for="(s,i) in cabSun.inner.segs" :key="'i'+i" cx="100" cy="100" r="44"
+                  fill="none" :stroke="s.color" stroke-width="18"
+                  :stroke-dasharray="s.dash + ' ' + (cabSun.inner.c - s.dash)"
+                  :stroke-dashoffset="s.offset" transform="rotate(-90 100 100)"/>
+                <circle cx="100" cy="100" r="72" fill="none" stroke="var(--cab-line)" stroke-width="18"/>
+                <circle v-for="(s,i) in cabSun.outer.segs" :key="'o'+i" cx="100" cy="100" r="72"
+                  fill="none" :stroke="s.color" stroke-width="18" opacity=".82"
+                  :stroke-dasharray="s.dash + ' ' + (cabSun.outer.c - s.dash)"
+                  :stroke-dashoffset="s.offset" transform="rotate(-90 100 100)"/>
+                <text x="100" y="97" text-anchor="middle" class="cab-sun-n">{{ summary.total }}</text>
+                <text x="100" y="117" text-anchor="middle" class="cab-ring-t">台 · 本轮</text>
+              </svg>
+              <div class="cab-sun-side">
+                <div class="cab-sun-t">内环 · 设备分区</div>
+                <div v-for="(s,i) in cabSun.inner.segs" :key="'li'+i" class="cab-lg">
+                  <i :style="{background:s.color}"></i><span>{{ s.label }}</span><b>{{ s.value }}</b>
+                </div>
+                <div class="cab-sun-t">外环 · 状态构成</div>
+                <div class="cab-sun-st">
+                  <span v-for="(t,i) in cabStLegend" :key="i">
+                    <i :style="{background:t.color}"></i>{{ t.label }} {{ t.value }}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="cab-panel cab-b2">
+            <div class="cab-h">
+              <b>趋势</b>
+              <span class="cab-tabs">
+                <span v-for="t in cabTrendTabs" :key="t.key" class="opt"
+                  :class="{active: cabTrendTab===t.key}" @click="setTrendTab(t.key)">{{ t.label }}</span>
+              </span>
+              <span v-if="showCabMeta" class="cab-meta">{{ cabMeta.b2 }}</span>
+            </div>
+            <div class="cab-b cab-trend-b">
+              <svg v-if="cabTrend.bars.length" class="cab-trend-svg" viewBox="0 0 560 150">
+                <line v-for="(y,i) in cabTrend.grid" :key="'g'+i" x1="38" x2="552" :y1="y" :y2="y"
+                  stroke="var(--cab-line)" stroke-width="1"/>
+                <text v-for="(a,i) in cabTrend.axis" :key="'a'+i" x="32" :y="cabTrend.grid[i]+4"
+                  text-anchor="end" class="cab-axis">{{ a }}</text>
+                <g v-for="(b,i) in cabTrend.bars" :key="'b'+i">
+                  <rect v-for="(p,j) in b.parts" :key="j" :x="b.x" :y="p.y" :width="b.w" :height="p.h" :fill="p.color"/>
+                  <text :x="b.x + b.w/2" y="146" text-anchor="middle" class="cab-axis">{{ b.label }}</text>
+                </g>
+              </svg>
+              <div v-else class="cab-empty">{{ cabTrend.empty }}</div>
+              <div class="cab-trend-foot">{{ cabTrend.source }}</div>
+            </div>
+          </div>
+
+          <div class="cab-panel cab-c1">
+            <div class="cab-h"><b>活跃告警</b><span class="cab-h-sub">{{ ext.events.length }} 条未恢复</span>
+              <span v-if="showCabMeta" class="cab-meta">{{ cabMeta.c1 }}</span></div>
+            <div class="cab-b cab-ev-list">
+              <div v-for="e in cabAlerts" :key="e.id" class="cab-ev" :class="e.level">
+                <span class="dot"></span><span class="tx" :title="e.message">{{ e.message }}</span>
+                <span class="tm">{{ e.meta }}</span>
+              </div>
+              <div v-if="!cabAlerts.length" class="cab-empty">暂无活跃告警</div>
+            </div>
+          </div>
+
+          <div class="cab-panel cab-c2">
+            <div class="cab-h">
+              <b>TOP 榜</b>
+              <span class="cab-tabs">
+                <span v-for="t in cabTopTabs" :key="t.key" class="opt"
+                  :class="{active: cabTopTab===t.key}" @click="setTopTab(t.key)">{{ t.label }}</span>
+              </span>
+              <span v-if="showCabMeta" class="cab-meta">{{ cabMeta.c2 }}</span>
+            </div>
+            <div class="cab-b cab-rank">
+              <div v-for="(r,i) in cabTopRows" :key="i" class="cab-rank-row">
+                <span class="no">{{ i+1 }}</span>
+                <span class="nm" :title="r.label">{{ r.label }}</span>
+                <span class="track"><i :style="{width: r.w + '%'}"></i></span>
+                <span class="vl">{{ r.value }}</span>
+              </div>
+              <div v-if="!cabTopRows.length" class="cab-empty">暂无排行数据</div>
+            </div>
+          </div>
+
+          <div class="cab-panel cab-c3">
+            <div class="cab-h"><b>覆盖与处置</b><span v-if="showCabMeta" class="cab-meta">{{ cabMeta.c3 }}</span></div>
+            <div class="cab-b cab-cover">
+              <div class="cab-cov-item">
+                <div class="ring" :style="{background: 'conic-gradient(var(--cab-ok) ' + cabCover.done + '%, var(--cab-surface) 0)'}"><i>{{ cabCover.done }}%</i></div>
+                <div class="lb">本轮巡检完成</div><div class="sb">{{ summary.total - summary.error }} / {{ summary.total }} 台</div>
+              </div>
+              <div class="cab-cov-item">
+                <div class="ring" :style="{background: 'conic-gradient(var(--cab-info) ' + cabCover.ack + '%, var(--cab-surface) 0)'}"><i>{{ cabCover.ack }}%</i></div>
+                <div class="lb">告警已确认</div><div class="sb">{{ cabCover.ackBase }} 条未恢复</div>
+              </div>
+              <div class="cab-cov-item">
+                <div class="ring" :style="{background: 'conic-gradient(var(--cab-s1) ' + (cabCover.avail === null ? 0 : cabCover.avail) + '%, var(--cab-surface) 0)'}">
+                  <i>{{ cabCover.avail === null ? '-' : cabCover.avail + '%' }}</i>
+                </div>
+                <div class="lb">近 7 天可用率</div><div class="sb">{{ cabCover.availBase }}</div>
+              </div>
+              <div class="cab-cov-line">纳管指标 <b>{{ cabCover.metrics }}</b> 项 · 阈值规则 <b>{{ ext.rules.length }}</b> 条</div>
+            </div>
+          </div>
+
+          <div class="cab-panel cab-d1">
+            <div class="cab-h"><b>textfile 业务指标</b><span class="cab-h-sub">{{ bizCards.length }} 项</span>
+              <span v-if="showCabMeta" class="cab-meta">{{ cabMeta.d1 }}</span></div>
+            <div class="cab-b cab-biz">
+              <div v-for="c in bizCards" :key="c.key" class="cab-biz-card" :class="c.cls">
+                <div class="k" :title="c.key">{{ c.label }}</div>
+                <div class="v">{{ c.value }}<s v-if="c.unit">{{ c.unit }}</s></div>
+                <div class="d" :title="c.device">{{ c.device }}</div>
+              </div>
+              <div v-if="!bizCards.length" class="cab-empty">暂无 textfile 业务指标：目标机 .prom 放入 textfile_inputs 后，下一轮巡检会出现在这里</div>
+            </div>
+          </div>
+
+          <div v-if="canDashboard" class="cab-panel cab-d2">
+            <div class="cab-h"><b>最近事件流水</b><span v-if="showCabMeta" class="cab-meta">{{ cabMeta.d2 }}</span></div>
+            <div class="cab-b cab-tl">
+              <div v-for="(r,i) in cabRecent" :key="i" class="cab-tl-row">
+                <span class="tm">{{ r.at }}</span>
+                <span class="tx"><b>{{ r.no }}</b> {{ r.title }} <em>{{ r.who }}</em></span>
+              </div>
+              <div v-if="!cabRecent.length" class="cab-empty">暂无处理动态，或工作台接口暂不可用</div>
+            </div>
+          </div>
+          <div v-else class="cab-panel cab-d2">
+            <div class="cab-h"><b>最近事件流水</b></div>
+            <div class="cab-b"><div class="cab-empty">需要「工作台 · 查看」权限，未发起请求</div></div>
+          </div>
+
+          <div class="cab-foot">
+            <span>口径：设备状态来自最近一轮巡检（每 {{ data.interval }} 秒）· 流量为近 {{ nfMinutes }} 分钟 · 工单为近 30 天 · 合同为近 12 个月</span>
+            <span>{{ cabAsOf }} · {{ data.sourceMode ? sourceLabel : '数据源未就绪' }}</span>
+          </div>
+        </div>
+      </div>
     </div>`,
 
     data() {
       return {
         data: { interval: 60, devices: [], summary: {}, running: false, round: 0 },
+        // ---- P1 驾驶舱版：默认值班版，绝不改变既有值班习惯 ----
+        screenMode: 'duty',
+        palette: 'system',
+        showCabMeta: true,
+        trendTab: 'flow',
+        cockpitTab: 'ip',
+        cabModes: CAB_MODES,
+        cabPalettes: CAB_PALETTES,
+        // 工作台统计：只在驾驶舱版且持有 dashboard.view 时请求；接口 404 走 safeGet 降级
+        biz: { ready: false, contracts: {}, issues: {} },
         clock: '--:--:--',
         dateText: '',
         full: false,
@@ -491,6 +798,8 @@
           range: '24h', deviceId: 0, key: 'cpu_percent',
           events: [], rules: [], ruleDraft: {},
           summary: { open: 0, unacked: 0, critical: 0 },
+          // 近 7 天可用率：历史库没跑第一轮时 ready:false，C3 显示「-」而不是 0%
+          avail: { ready: false, items: [] },
           newRule: { device_id: 0, metric_key: 'cpu_percent', warn: 80, crit: 95 }
         }
       };
@@ -778,6 +1087,249 @@
           yWarn: rule ? yRule(Number(rule.warn)) : null,
           yCrit: rule ? yRule(Number(rule.crit)) : null
         };
+      },
+
+      /* ---------------- P1 驾驶舱版：全部从现有响应式数据派生 ----------------
+         不新增后端接口、不新增定时轮询；任何接口 404 / 权限不足都降级成空态，
+         整屏绝不白屏（沿用 nf.ready / ext.ready 的既有设计原则）。 */
+
+      canDashboard() { return !!(window.HisPerm && window.HisPerm.can('dashboard.view')); },
+      cabAsOf() {
+        return this.data.updatedAt ? '数据截至 ' + String(this.data.updatedAt).slice(5, 16)
+          : '等待首轮巡检数据';
+      },
+      cabMeta() {
+        return {
+          a1: '/api/inspection/status · summary',
+          a2: '/api/inspection/status · devices[].os',
+          a3: '/api/inspection/status · devices[]',
+          b1: '/api/inspection/status · devices[] × status',
+          b2: this.cabTrendTab === 'flow' ? '/api/inspection/netflow/trend · netflow.view'
+            : (this.cabTrendTab === 'issues'
+              ? '/api/dashboard/issues · daily[]' : '/api/dashboard/contracts · monthly[]'),
+          c1: '/api/inspection/alerts/events · inspection.view',
+          c2: (this.cabTopTab === 'ip' || this.cabTopTab === 'port')
+            ? '/api/inspection/netflow/top · netflow.view'
+            : (this.cabTopTab === 'alert'
+              ? '/api/inspection/alerts/events · inspection.view'
+              : '/api/inspection/status · devices[].cpu'),
+          c3: '/api/inspection/alerts/summary + availability · inspection.view',
+          d1: '/api/inspection/metrics/latest · inspection.view',
+          d2: '/api/dashboard/issues · recent[] · dashboard.view'
+        };
+      },
+      cabKpis() {
+        const s = this.summary, u = Number((this.ext.summary || {}).unacked) || 0;
+        return [
+          { k: 'total', label: '设备总数', v: s.total, cls: '', meta: '/api/inspection/status · inspection.view' },
+          { k: 'normal', label: '正常', v: s.normal, cls: 'ok', meta: '/api/inspection/status · inspection.view' },
+          { k: 'warning', label: '警告', v: s.warning, cls: 'warn', meta: '/api/inspection/status · inspection.view' },
+          { k: 'critical', label: '严重', v: s.critical, cls: 'bad', meta: '/api/inspection/status · inspection.view' },
+          { k: 'error', label: '巡检失败', v: s.error, cls: 'muted', meta: '/api/inspection/status · inspection.view' },
+          { k: 'unacked', label: '未确认告警', v: u, cls: u ? 'bad' : 'ok', meta: '/api/inspection/alerts/summary · inspection.view' }
+        ];
+      },
+      /** 未归类设备兜底成「其他」，保证内环 / 外环 / 中心数字互相自洽 */
+      cabGroups() {
+        const devs = this.data.devices || [];
+        const out = [];
+        let grouped = 0;
+        GROUPS.forEach((g, i) => {
+          const list = devs.filter((d) => g.os.indexOf(d.os) >= 0);
+          if (!list.length) return;
+          grouped += list.length;
+          out.push(cabGroupOf(g.key, g.title, list, 'var(--cab-s' + ((i % 5) + 1) + ')'));
+        });
+        if (grouped < devs.length) {
+          out.push(cabGroupOf('other', '其他', devs.filter((d) =>
+            !GROUPS.some((g) => g.os.indexOf(d.os) >= 0)), 'var(--cab-s5)'));
+        }
+        return out;
+      },
+      cabStatusRing() {
+        const s = this.summary;
+        return arcOf([
+          { label: '正常', value: s.normal, color: CAB_ST_COLOR.normal },
+          { label: '警告', value: s.warning, color: CAB_ST_COLOR.warning },
+          { label: '严重', value: s.critical, color: CAB_ST_COLOR.critical },
+          { label: '失败', value: s.error, color: CAB_ST_COLOR.error }
+        ], 52);
+      },
+      cabGroupRing() {
+        return arcOf(this.cabGroups.map((g) => ({ label: g.title, value: g.total, color: g.color })), 52);
+      },
+      cabSun() {
+        const gs = this.cabGroups;
+        const outerRaw = [];
+        for (const g of gs) {
+          for (const k of ['normal', 'warning', 'critical', 'error']) {
+            outerRaw.push({ label: g.title + ' · ' + ST_LABEL[k], value: g.counts[k], color: CAB_ST_COLOR[k] });
+          }
+        }
+        return {
+          inner: arcOf(gs.map((g) => ({ label: g.title, value: g.total, color: g.color })), 44),
+          outer: arcOf(outerRaw, 72)
+        };
+      },
+      cabStLegend() {
+        const s = this.summary;
+        return [
+          { label: '正常', value: s.normal, color: CAB_ST_COLOR.normal },
+          { label: '警告', value: s.warning, color: CAB_ST_COLOR.warning },
+          { label: '严重', value: s.critical, color: CAB_ST_COLOR.critical },
+          { label: '失败', value: s.error, color: CAB_ST_COLOR.error }
+        ];
+      },
+      /** Tab 只按权限生成：没权限的源连 Tab 都不出现，更不会去请求 */
+      cabTrendTabs() {
+        const t = [];
+        if (this.canNetflow) t.push({ key: 'flow', label: '流量吞吐' });
+        if (this.canDashboard) {
+          t.push({ key: 'issues', label: '工单趋势' });
+          t.push({ key: 'contracts', label: '合同新增' });
+        }
+        return t;
+      },
+      /** 不在 computed 里写 this.trendTab（渲染期改响应式数据会触发二次更新）。
+          派生「当前实际生效的 Tab」，用户切换时由 setTrendTab 校验后写入。 */
+      cabTrendTab() {
+        const keys = this.cabTrendTabs.map((t) => t.key);
+        return keys.indexOf(this.trendTab) >= 0 ? this.trendTab : (keys[0] || 'flow');
+      },
+      cabTopTabs() {
+        const t = [];
+        if (this.canNetflow) {
+          t.push({ key: 'ip', label: '流量 IP' });
+          t.push({ key: 'port', label: '流量端口' });
+        }
+        if (this.canInspect) {
+          t.push({ key: 'load', label: '高负载设备' });
+          t.push({ key: 'alert', label: '告警设备' });
+        }
+        return t;
+      },
+      cabTopTab() {
+        const keys = this.cabTopTabs.map((t) => t.key);
+        return keys.indexOf(this.cockpitTab) >= 0 ? this.cockpitTab : (keys[0] || 'load');
+      },
+      /** 堆叠柱：三个数据源统一成 {bars,grid,axis,source,empty}，模板不做分支 */
+      cabTrend() {
+        const tab = this.cabTrendTab;
+        let raw = [], source = '', empty = '暂无数据';
+        if (tab === 'flow') {
+          raw = (this.nf.trend || []).slice(-12).map((it) => ({
+            label: String(it.at || '').slice(11, 16),
+            parts: [
+              { v: Number(it.inBps) || 0, color: 'var(--cab-info)' },
+              { v: Number(it.outBps) || 0, color: 'var(--cab-s1)' }
+            ]
+          }));
+          source = '/api/inspection/netflow/trend · 入站 / 出站 · 近 ' + this.nfMinutes + ' 分钟';
+          empty = this.nf.error ? '流量数据不可用：' + this.nf.error : '还没有流量样本（每 5 分钟一轮）';
+        } else if (tab === 'issues') {
+          raw = (((this.biz.issues || {}).daily) || []).slice(-14).map((d) => ({
+            label: String(d.d || '').slice(5),
+            parts: [{ v: Number(d.c) || 0, color: 'var(--cab-s2)' }]
+          }));
+          source = '/api/dashboard/issues · 近 30 天每日新增工单';
+          empty = '工作台工单统计暂不可用';
+        } else {
+          raw = (((this.biz.contracts || {}).monthly) || []).slice(-12).map((m) => ({
+            label: String(m.ym || '').slice(2),
+            parts: [{ v: Number(m.c) || 0, color: 'var(--cab-s3)' }]
+          }));
+          source = '/api/dashboard/contracts · 近 12 个月新增合同';
+          empty = '工作台合同统计暂不可用';
+        }
+        const W = 560, H = 150, L = 38, R = 8, T = 8, B = 20;
+        let max = 0;
+        for (const r of raw) {
+          let sum = 0;
+          for (const p of r.parts) sum += Math.max(0, p.v);
+          max = Math.max(max, sum);
+        }
+        if (max <= 0) return { bars: [], grid: [], axis: [], source: source, empty: empty };
+        const ih = H - T - B, iw = W - L - R;
+        const step = iw / Math.max(1, raw.length);
+        const bw = Math.max(6, Math.min(30, step * 0.62));
+        const bars = raw.map((r, i) => {
+          let acc = 0;
+          const parts = r.parts.map((p) => {
+            const h = Math.max(0, p.v) / max * ih;
+            const row = { y: +(T + ih - acc - h).toFixed(2), h: +h.toFixed(2), color: p.color };
+            acc += h;
+            return row;
+          });
+          return {
+            x: +(L + step * i + (step - bw) / 2).toFixed(2), w: +bw.toFixed(2),
+            label: r.label, parts: parts
+          };
+        });
+        const grid = [T, T + ih / 2, T + ih].map((n) => +n.toFixed(2));
+        return { bars: bars, grid: grid, axis: [String(Math.round(max)), String(Math.round(max / 2)), '0'],
+          source: source, empty: empty };
+      },
+      /** 参考图 4 个重复 TOP10 → 一个 Tab 榜：流量 IP / 端口 / 高负载 / 告警 */
+      cabTopRows() {
+        const tab = this.cabTopTab;
+        let rows = [];
+        if (tab === 'ip' || tab === 'port') {
+          const src = (tab === 'ip' ? this.nf.topIp : this.nf.topPort) || [];
+          let max = 0;
+          for (const r of src) max = Math.max(max, Number(r.peakBps) || 0);
+          rows = src.slice(0, 6).map((r) => ({
+            label: r.ip || (r.ipCount > 1 ? r.ipCount + ' 个终端' : r.iface),
+            value: r.peakText || this.nfFmt(r.peakBps),
+            w: Math.max(3, Math.round((Number(r.peakBps) || 0) / (max || 1) * 100))
+          }));
+        } else if (tab === 'load') {
+          const list = (this.data.devices || [])
+            .filter((d) => d.status !== 'error' && typeof d.cpu === 'number' && isFinite(d.cpu))
+            .sort((a, b) => b.cpu - a.cpu).slice(0, 6);
+          const max = list.length ? list[0].cpu : 1;
+          rows = list.map((d) => ({ label: d.name, value: this.pct(d.cpu),
+            w: Math.max(3, Math.round(d.cpu / (max || 1) * 100)) }));
+        } else {
+          const list = (this.ext.events || []).slice()
+            .sort((a, b) => (Number(b.hits) || 0) - (Number(a.hits) || 0)).slice(0, 6);
+          const max = list.length ? (Number(list[0].hits) || 1) : 1;
+          rows = list.map((e) => ({ label: String(e.message || '').slice(0, 20),
+            value: (e.hits || 0) + ' 轮',
+            w: Math.max(3, Math.round((Number(e.hits) || 0) / max * 100)) }));
+        }
+        return rows;
+      },
+      cabAlerts() {
+        return (this.ext.events || []).slice()
+          .sort((a, b) => (a.level === 'critical' ? 0 : 1) - (b.level === 'critical' ? 0 : 1))
+          .slice(0, 5).map((e) => ({
+            id: e.id, level: e.level || 'warning', message: e.message,
+            meta: String(e.first_at || '').slice(5, 16) + ' · ' + (e.hits || 0) + ' 轮'
+          }));
+      },
+      cabCover() {
+        const s = this.summary, es = this.ext.summary || {};
+        const done = s.total ? Math.max(0, Math.round((s.total - s.error) / s.total * 100)) : 0;
+        const open = Number(es.open) || 0, unacked = Number(es.unacked) || 0;
+        const ack = open ? Math.max(0, Math.round((open - unacked) / open * 100)) : 100;
+        const items = (this.ext.avail || {}).items || [];
+        let sum = 0, n = 0;
+        for (const a of items) {
+          const v = Number(a.rate);
+          if (Number.isFinite(v)) { sum += v; n++; }
+        }
+        return {
+          done: done, ack: ack, ackBase: open,
+          avail: n ? Math.round(sum / n) : null,
+          availBase: n ? n + ' 台设备 · 历史库' : '历史库暂无可用率数据',
+          metrics: this.metricOptions.length
+        };
+      },
+      cabRecent() {
+        return (((this.biz.issues || {}).recent) || []).slice(0, 6).map((r) => ({
+          no: r.no || '', title: r.title || r.action || '',
+          who: r.operator_name || '—', at: String(r.created_at || '').slice(5, 16)
+        }));
       }
     },
 
@@ -945,12 +1497,14 @@
         try { return await api.get(url); } catch (e) { return fallback; }
       },
       async loadExt() {
-        const [cat, lat, ev, sum, rules] = await Promise.all([
+        const [cat, lat, ev, sum, rules, av] = await Promise.all([
           this.safeGet('/api/inspection/metrics/catalog', { items: [] }),
           this.safeGet('/api/inspection/metrics/latest', { ready: false, items: [] }),
           this.safeGet('/api/inspection/alerts/events?status=unresolved&limit=50', { items: [] }),
           this.safeGet('/api/inspection/alerts/summary', { open: 0, unacked: 0, critical: 0 }),
-          this.safeGet('/api/inspection/alerts/rules', { items: [] })
+          this.safeGet('/api/inspection/alerts/rules', { items: [] }),
+          // 驾驶舱 C3 的「近 7 天可用率」：老后端没有这个接口时返回 ready:false，显示「-」
+          this.safeGet('/api/inspection/availability?days=7', { ready: false, items: [] })
         ]);
         const catalog = (cat && cat.items) || [];
         const ruleList = (rules && rules.items) || [];
@@ -979,7 +1533,8 @@
           latest: lat || { ready: false, roundNo: 0, checkedAt: null, items: [] },
           events: (ev && ev.items) || [],
           summary: sum || { open: 0, unacked: 0, critical: 0 },
-          rules: ruleList, ruleDraft: draft
+          rules: ruleList, ruleDraft: draft,
+          avail: av || { ready: false, items: [] }
         });
         await this.loadSeries();
       },
@@ -1044,6 +1599,7 @@
         if (this.canInspect) this.load();
         if (this.canNetflow) this.loadNetflow();
         if (this.canInspect) this.loadExt();
+        if (this.screenMode === 'cockpit') this.loadBiz();
       },
 
       setNfMode(k) { this.nfMode = k; this.saveNfPref(); },
@@ -1110,12 +1666,70 @@
           document.exitFullscreen();
         }
       },
-      onFsChange() { this.full = !!document.fullscreenElement; }
+      onFsChange() { this.full = !!document.fullscreenElement; },
+
+      /* ---------------- P1 驾驶舱版：偏好 / Tab / 业务取数 ---------------- */
+
+      /** 照抄 saveNfPref 的 try/catch：隐私模式下 localStorage 不可写不能让大屏挂掉 */
+      saveScreenPref() {
+        try {
+          localStorage.setItem('his_scr_mode', JSON.stringify({
+            mode: this.screenMode, palette: this.palette, meta: this.showCabMeta
+          }));
+        } catch (e) { /* 退回默认值即可 */ }
+      },
+      loadScreenPref() {
+        try {
+          const o = JSON.parse(localStorage.getItem('his_scr_mode') || '{}') || {};
+          if (['duty', 'cockpit'].indexOf(o.mode) >= 0) this.screenMode = o.mode;
+          if (['system', 'ref'].indexOf(o.palette) >= 0) this.palette = o.palette;
+          if (typeof o.meta === 'boolean') this.showCabMeta = o.meta;
+        } catch (e) { /* 配置坏了就退回默认值班版 */ }
+      },
+      /** ?mode=cockpit 给预览页 / 投屏预案用：只临时覆盖，不写回偏好。
+          同时认 location.search 与 hash 里的查询串（main.js 是 hash 路由）。 */
+      applyScreenOverride() {
+        const read = (s) => {
+          try { return new URLSearchParams(s); } catch (e) { return null; }
+        };
+        const h = String(location.hash || '');
+        const hq = h.indexOf('?') >= 0 ? read(h.slice(h.indexOf('?') + 1)) : null;
+        const q = read(String(location.search || ''));
+        const m = (hq && hq.get('mode')) || (q && q.get('mode'));
+        if (m === 'cockpit' || m === 'duty') this.screenMode = m;
+        const p = (hq && hq.get('palette')) || (q && q.get('palette'));
+        if (p === 'ref' || p === 'system') this.palette = p;
+      },
+      setScreenMode(k) {
+        if (['duty', 'cockpit'].indexOf(k) < 0) return;
+        this.screenMode = k;
+        this.saveScreenPref();
+        if (k === 'cockpit') this.loadBiz();
+      },
+      setPalette(k) {
+        if (['system', 'ref'].indexOf(k) >= 0) { this.palette = k; this.saveScreenPref(); }
+      },
+      toggleCabMeta() { this.showCabMeta = !this.showCabMeta; this.saveScreenPref(); },
+      setTrendTab(k) { if (this.cabTrendTabs.some((t) => t.key === k)) this.trendTab = k; },
+      setTopTab(k) { if (this.cabTopTabs.some((t) => t.key === k)) this.cockpitTab = k; },
+      /** 只在驾驶舱版 + 有 dashboard.view 时才真的发请求；任一接口 404 只让对应面板空着。
+          不新增后端接口，也不新增服务重启的需求。 */
+      async loadBiz() {
+        if (this.screenMode !== 'cockpit' || !this.canDashboard) return;
+        const [c, i] = await Promise.all([
+          this.safeGet('/api/dashboard/contracts', null),
+          this.safeGet('/api/dashboard/issues', null)
+        ]);
+        this.biz = { ready: !!(c || i), contracts: c || {}, issues: i || {} };
+      }
     },
 
     mounted() {
       this.ensureUi();
       this.loadNfPref();
+      // 版式偏好默认值班版；?mode=cockpit 只临时覆盖（预览页 / 投屏预案），不写回偏好
+      this.loadScreenPref();
+      this.applyScreenOverride();
       this.tick();
       // 没有对应权限的接口一律不请求：既不会刷出一堆 403 提示，也少两次无用请求
       if (this.canInspect) {
@@ -1130,6 +1744,12 @@
         // 流量 5 分钟才采一轮，跟着 15 秒轮询纯属浪费；60 秒足够跟上手工触发的采集
         this._n = setInterval(this.loadNetflow, 60000);
       }
+      // 工作台统计只给驾驶舱版用。定时器常驻、loadBiz 内部按版式与权限短路，
+      // 值班版只是空转一次 return，换来切版式时不必管定时器生命周期。
+      if (this.canDashboard) {
+        this.loadBiz();
+        this._b = setInterval(this.loadBiz, 60000);
+      }
       this._t = setInterval(this.tick, 1000);
       document.addEventListener('fullscreenchange', this.onFsChange);
       document.addEventListener('keydown', this.onKey);
@@ -1140,6 +1760,7 @@
       clearInterval(this._p);
       clearInterval(this._n);
       clearInterval(this._e);
+      clearInterval(this._b);
       document.removeEventListener('fullscreenchange', this.onFsChange);
       document.removeEventListener('keydown', this.onKey);
     }

@@ -54,10 +54,10 @@ const MODULES = [
   // 普通用户要能提交工单，但不该能动别人的工单状态
   { code: 'issues', name: '问题工单', group: '系统问题管理', acts: ['view', 'create', 'manage'], actLabels: { manage: '处理' } },
   { code: 'docs', name: '技术文档库', group: '技术文档库', acts: ['view', 'manage'] },
-  // 网页书签：密码单独一档「看密码」。
-  // 刻意不让 manage 隐含它 —— 能改书签的人不一定该看到口令，
+  // 系统账号保管（原「网页书签」）：密码单独一档「看密码」。
+  // 刻意不让 manage 隐含它 —— 能改账号的人不一定该看到口令，
   // 否则「按角色授予是否可查看密码」这个需求根本落不了地（勾了管理就等于勾了看密码）。
-  { code: 'bookmarks', name: '网页书签', group: '资源管理', acts: ['view', 'manage', 'secret'], actLabels: { secret: '看密码' } },
+  { code: 'bookmarks', name: '系统账号保管', group: '资源管理', acts: ['view', 'manage', 'secret'], actLabels: { secret: '看密码' } },
   { code: 'ipam', name: 'IP 管理', group: '资源管理', acts: ['view', 'manage'] },
   // 终端资产台账：PC / 打印机 / 自助机这类「连不上也管不了」的设备。
   // 与下面【机房巡检】的「设备台账」不是一回事 —— 那个是能 WMI/SSH 采集的服务器与网络设备。

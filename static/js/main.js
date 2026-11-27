@@ -80,7 +80,7 @@
       { path: 'docs', icon: 'book', label: '技术文档', perm: 'docs.view' },
     ] },
     { title: '资源管理', items: [
-      { path: 'bookmarks', icon: 'link', label: '网页书签', perm: 'bookmarks.view' },
+      { path: 'bookmarks', icon: 'link', label: '系统账号保管', perm: 'bookmarks.view' },
       { path: 'ipam', icon: 'ip', label: 'IP 管理', perm: 'ipam.view' },
       { path: 'terminals', icon: 'server', label: '终端资产', perm: 'terminals.view' },
     ] },
@@ -128,7 +128,7 @@
     issue: '问题详情',
     docs: '技术文档',
     doc: '文档预览',
-    bookmarks: '网页书签',
+    bookmarks: '系统账号保管',
     ipam: 'IP 管理',
     terminals: '终端资产',
     launches: '上线管理',

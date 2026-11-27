@@ -1,14 +1,17 @@
-/* 网页书签管理
+/* 系统账号保管（原「网页书签」）
  *
  * 用户诉求：把「内部系统入口 + 对应账号密码」收进系统，且**密码可以按角色授权是否可见**。
  *
- * 前端这里的两个关键点：
+ * 前端这里的三个关键点：
  * 1) 【查看密码】按钮的显隐走 HisPerm.can('bookmarks.secret') —— 注意它与「管理」是**两档**，
  *    持 manage 不代表能看密码（后端同样如此）。只在前端藏起来不算安全边界，
  *    真正的拦截在 GET /bookmarks/:id/secret 上的 requirePerm。
  * 2) 复制走的是 execCommand 兜底：内网是 http://10.x.x.x，
  *    浏览器只在安全上下文（https / localhost）才提供 navigator.clipboard，
  *    直接用它会在内网机器上静默失败（按钮点了没反应）。
+ * 3) 「查看记录」页签只读地展示服务端写的查看留痕。新接口 /bookmarks/audit 要求
+ *    bookmarks.secret；若后端尚未替换（404），自动回退 /logs 并如实提示权限要求，
+ *    绝不把「没权限」伪装成「没有记录」。
  */
 (function () {
   const V = window.HisViews || (window.HisViews = {});
@@ -46,15 +49,21 @@
     <div>
       <div class="page-head">
         <div>
-          <h2>网页书签</h2>
-          <div class="muted">内部系统的入口与账号集中在这里。密码按角色授权是否可见，查看动作会记入操作日志。</div>
+          <h2>系统账号保管</h2>
+          <div class="muted">内部系统的入口与账号集中在这里。密码按角色授权是否可见，每次查看都会在「查看记录」里留痕。</div>
         </div>
         <div class="page-actions">
           <span class="dev-badge muted">共 {{ total }} 条</span>
-          <button v-if="canManage" class="btn btn-primary" @click="openForm(null)">新增书签</button>
+          <button v-if="canManage" class="btn btn-primary" @click="openForm(null)">新增账号</button>
         </div>
       </div>
 
+      <div class="seg" style="margin-bottom:12px">
+        <button class="seg-btn" :class="{ on: tab === 'list' }" @click="switchTab('list')">账号列表</button>
+        <button class="seg-btn" :class="{ on: tab === 'audit' }" @click="switchTab('audit')">查看记录</button>
+      </div>
+
+      <div v-if="tab === 'list'">
       <div class="filter-bar">
         <input class="ipt grow" v-model="kw" placeholder="搜索名称 / 网址 / 账号 / 备注" @keyup.enter="load">
         <select class="ipt" v-model="group" @change="load">
@@ -87,7 +96,7 @@
               <tr v-if="loading"><td colspan="7" class="empty-row">加载中…</td></tr>
               <tr v-else-if="!list.length">
                 <td colspan="7" class="empty-row">
-                  还没有书签。{{ canManage ? '点右上角「新增书签」录入第一条。' : '请联系管理员录入。' }}
+                  还没有账号。{{ canManage ? '点右上角「新增账号」录入第一条。' : '请联系管理员录入。' }}
                 </td>
               </tr>
               <tr v-for="r in list" :key="r.id">
@@ -120,7 +129,7 @@
                       {{ busy === r.id ? '读取中' : '查看密码' }}
                     </button>
                   </div>
-                  <span v-else class="muted" title="需要「网页书签 · 看密码」权限">●●●●●● <i class="bm-lock">（无权限）</i></span>
+                  <span v-else class="muted" title="需要「系统账号保管 · 看密码」权限">●●●●●● <i class="bm-lock">（无权限）</i></span>
                 </td>
                 <td><span class="cell-sub">{{ r.note || '—' }}</span></td>
                 <td class="ops">
@@ -136,7 +145,7 @@
         </div>
         <div class="hint">
           密码经本机主密钥加密后存库（跨机器不可解密，与设备口令同一套机制）。
-          列表接口不返回密码，点「查看密码」才单独取一次，并写一条操作日志。
+          列表接口不返回密码，点「查看密码」才单独取一次，并写一条操作日志（可在「查看记录」里查）。
         </div>
       </div>
 
@@ -145,13 +154,59 @@
         <span class="muted">第 {{ page }} / {{ pageCount }} 页</span>
         <button class="btn btn-sm btn-outline" :disabled="page>=pageCount" @click="go(page+1)">下一页</button>
       </div>
+      </div>
+
+      <div v-else>
+        <div class="filter-bar">
+          <input class="ipt grow" v-model="auditKw" placeholder="搜索操作人 / 条目 / IP" @keyup.enter="loadAudit(1)">
+          <input class="ipt" type="date" v-model="auditFrom" @change="loadAudit(1)">
+          <input class="ipt" type="date" v-model="auditTo" @change="loadAudit(1)">
+          <button class="btn btn-outline" @click="loadAudit(1)">查询</button>
+          <button class="btn btn-outline" @click="resetAudit">重置</button>
+          <div class="grow"></div>
+          <span class="dev-badge muted">共 {{ auditTotal }} 条查看记录</span>
+        </div>
+        <div class="card card-flush">
+          <div class="table-wrap">
+            <table class="tbl">
+              <thead>
+                <tr>
+                  <th>查看时间</th>
+                  <th>操作人</th>
+                  <th>查看的条目</th>
+                  <th>来源 IP</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-if="auditLoading"><td colspan="4" class="empty-row">加载中…</td></tr>
+                <tr v-else-if="!auditList.length"><td colspan="4" class="empty-row">暂无查看记录。{{ auditNote }}</td></tr>
+                <tr v-for="a in auditList" :key="a.id">
+                  <td class="mono">{{ a.created_at }}</td>
+                  <td>{{ a.username || '—' }}</td>
+                  <td>{{ a.detail || '—' }}</td>
+                  <td class="mono">{{ a.ip || '—' }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="hint">
+            每次点「查看密码」都会写一条操作日志，这里只展示该动作的留痕，不含任何密码明文。
+            日志由服务端统一写入，前端只读。
+          </div>
+        </div>
+        <div class="pager" v-if="auditTotal > auditPageSize">
+          <button class="btn btn-sm btn-outline" :disabled="auditPage<=1" @click="goAudit(auditPage-1)">上一页</button>
+          <span class="muted">第 {{ auditPage }} / {{ auditPageCount }} 页</span>
+          <button class="btn btn-sm btn-outline" :disabled="auditPage>=auditPageCount" @click="goAudit(auditPage+1)">下一页</button>
+        </div>
+      </div>
 
       <!-- 新增 / 编辑
            ★ 表单弹窗不写 @click.self：点到外面的遮罩层不该把填了一半的内容清掉。
              要退出只能点 ✕ / 取消，且填过内容时会先确认一次。 -->
       <div class="modal-mask" v-if="form">
         <div class="modal" style="width:560px">
-          <div class="modal-head">{{ form.id ? '编辑书签' : '新增书签' }}<span class="modal-close" @click="tryCloseForm">✕</span></div>
+          <div class="modal-head">{{ form.id ? '编辑账号' : '新增账号' }}<span class="modal-close" @click="tryCloseForm">✕</span></div>
           <div class="modal-body">
             <div class="form-item">
               <label>名称 *</label>
@@ -204,6 +259,10 @@
         shown: {},   // id → { username, password }；只在本次会话内保留，切页即清
         form: null,
         formBase: '',  // 打开表单那一刻的快照，用来判断用户后来有没有改过东西
+        tab: 'list',
+        auditList: [], auditTotal: 0, auditPage: 1, auditPageSize: 20,
+        auditKw: '', auditFrom: '', auditTo: '',
+        auditLoading: false, auditNote: '', auditSource: '',
       };
     },
 
@@ -212,6 +271,7 @@
       // ★ 独立于 manage：能改书签不等于能看别人的密码
       canSecret() { return !!(window.HisPerm && window.HisPerm.can('bookmarks.secret')); },
       pageCount() { return Math.max(1, Math.ceil(this.total / this.pageSize)); },
+      auditPageCount() { return Math.max(1, Math.ceil(this.auditTotal / this.auditPageSize)); },
     },
 
     mounted() { this.load(); },
@@ -238,12 +298,53 @@
       go(p) { this.page = Math.min(Math.max(1, p), this.pageCount); this.load(); },
       reset() { this.kw = ''; this.group = ''; this.page = 1; this.load(); },
 
+      switchTab(t) {
+        this.tab = t;
+        if (t === 'audit' && !this.auditSource) this.loadAudit(1);
+      },
+      async loadAudit(p) {
+        if (p) this.auditPage = p;
+        this.auditLoading = true;
+        const q = '?page=' + this.auditPage + '&pageSize=' + this.auditPageSize
+          + '&keyword=' + encodeURIComponent(this.auditKw || '')
+          + '&from=' + encodeURIComponent(this.auditFrom || '')
+          + '&to=' + encodeURIComponent(this.auditTo || '');
+        try {
+          let d;
+          try {
+            d = await api.get('/bookmarks/audit' + q);
+            this.auditSource = 'vault';
+          } catch (e) {
+            // 后端还没替换（新接口 404）时回退到通用操作日志。
+            // /api/logs 要求 logs.view，没权限要如实提示，别伪装成「没有记录」。
+            if (String((e && e.message) || '').indexOf('404') < 0) throw e;
+            d = await api.get('/logs' + q + '&action=' + encodeURIComponent('查看书签凭据'));
+            this.auditSource = 'logs';
+          }
+          this.auditList = (d && d.list) || [];
+          this.auditTotal = (d && d.total) || 0;
+          this.auditNote = this.auditSource === 'logs'
+            ? '（数据来自操作日志，当前角色需具备「操作日志 · 查看」权限）' : '';
+        } catch (e) {
+          this.auditList = [];
+          this.auditTotal = 0;
+          this.auditNote = '读取失败：' + String((e && e.message) || e);
+        } finally {
+          this.auditLoading = false;
+        }
+      },
+      goAudit(p) { this.auditPage = Math.min(Math.max(1, p), this.auditPageCount); this.loadAudit(); },
+      resetAudit() { this.auditKw = ''; this.auditFrom = ''; this.auditTo = ''; this.loadAudit(1); },
+
       open(r) {
         if (!r.open_url) return this.$toast('这条书签没有填网址', 'err');
         window.open(r.open_url, '_blank', 'noopener');
       },
 
       async reveal(r) {
+        // ★ 二次验证（step-up）后续接在这里：服务端在 GET /bookmarks/:id/secret
+        //   校验 TOTP 通过后才解密，前端相应地在调用前弹一次验证码输入框。
+        //   本次按约定先不做，查看留痕与权限拦截已经生效。
         this.busy = r.id;
         try {
           const d = await api.get('/bookmarks/' + r.id + '/secret');
@@ -314,7 +415,7 @@
       },
 
       async del(r) {
-        if (!confirm('确定删除书签「' + r.name + '」？此操作不可撤销。')) return;
+        if (!confirm('确定删除账号「' + r.name + '」？此操作不可撤销。')) return;
         try {
           await api.del('/bookmarks/' + r.id);
           this.$toast('已删除', 'ok');

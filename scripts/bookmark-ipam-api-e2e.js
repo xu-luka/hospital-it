@@ -281,6 +281,24 @@ function eq(tag, a, b) {
   eq('只读角色删 IP → 403', (await call('viewer', 'DELETE', '/api/ipam/ips/1')).status, 403);
   eq('只读角色删网段 → 403', (await call('viewer', 'DELETE', '/api/ipam/segments/' + segId)).status, 403);
 
+  // == 凭据查看记录（本次新增 GET /bookmarks/audit）==
+  // 前面多次成功调用过 /:id/secret，logs 表里应当已经有「查看书签凭据」留痕。
+  console.log('\n== 凭据查看记录：GET /bookmarks/audit ==');
+  const au1 = await call('admin', 'GET', '/api/bookmarks/audit');
+  eq('管理员查凭据查看记录 → 200', au1.status, 200);
+  ok('返回结构含 list / total',
+    !!(au1.json && au1.json.data && Array.isArray(au1.json.data.list) && typeof au1.json.data.total === 'number'));
+  ok('★ 至少有一条「查看书签凭据」留痕', au1.json.data.total >= 1, 'total=' + au1.json.data.total);
+  ok('★ 审计响应里不含明文密码', String(au1.raw || '').indexOf(PLAIN) < 0);
+  ok('每条留痕含时间 / 操作人 / 条目 / IP', au1.json.data.list.every(
+    (r) => 'created_at' in r && 'username' in r && 'detail' in r && 'ip' in r));
+  eq('只读角色（无 secret）查审计 → 403', (await call('viewer', 'GET', '/api/bookmarks/audit')).status, 403);
+  eq('无权限角色查审计 → 403', (await call('none', 'GET', '/api/bookmarks/audit')).status, 403);
+  const au2 = await call('admin', 'GET', '/api/bookmarks/audit?keyword=' + encodeURIComponent('绝不存在的条目_zzz'));
+  eq('关键词筛选 → 0 条', au2.json.data.total, 0);
+  const au3 = await call('admin', 'GET', '/api/bookmarks/audit?pageSize=1');
+  eq('分页 pageSize=1 生效', au3.json.data.list.length, 1);
+
   console.log('\n========================================');
   console.log('通过 ' + pass + ' 项，失败 ' + fails.length + ' 项');
   if (fails.length) fails.forEach((f) => console.log('  [FAIL] ' + f));
